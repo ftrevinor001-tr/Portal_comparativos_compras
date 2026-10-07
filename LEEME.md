@@ -6,10 +6,10 @@
 - `supabase_setup.sql` — crea las tablas, la seguridad y los 3 aprobadores.
 
 ## Instalación (una sola vez)
-1. **Supabase**: crea un proyecto nuevo (ej. `Portal-comparativos`).
-2. Abre **SQL Editor → New query**, pega `supabase_setup.sql`.
+1. **Supabase**: usa un proyecto que ya tengas, por ejemplo el de sobrepedidos. No hace falta uno nuevo: todas las tablas y funciones de este portal empiezan con `cmp_` y no tocan las que ya existen.
+2. En ese proyecto abre **SQL Editor → New query** y pega `supabase_setup.sql`.
    Antes de ejecutarlo, cambia en la sección 10 los nombres reales del Jefe de Costos y del Gerente de Compras y sus PIN iniciales. Luego presiona **Run**.
-3. En **Project Settings → API** copia la *Project URL* y la llave *anon public* y pégalas en `config.js`.
+3. En **Project Settings → API** de ese mismo proyecto copia la *Project URL* y la llave *anon public* y pégalas en `config.js`.
 4. **GitHub**: crea el repositorio (ej. `ftrevinor001-tr/Portal-comparativos`), sube `index.html` y `config.js` y activa **Settings → Pages** (rama main, carpeta raíz).
 5. Entra como FERNANDO TREVIÑO → **Administración → Cargar catálogo**. Sube *Productos por Estructura Comercial.xlsx*. Así se cargan las claves y se dan de alta los compradores. Después sube el reporte de precio base / último costo del reporteador, que solo actualiza esas columnas.
 6. Cada aprobador cambia su PIN en **Administración → Cambiar mi PIN**.

@@ -218,59 +218,59 @@ function makeSupabaseApi(){
     return out;
   }
   return {
-    usuarios: async () => ok(await sb.from('usuarios').select('*').order('nombre')),
-    verificarPin: async (id, pin) => ok(await sb.rpc('verificar_pin', {p_usuario_id:id, p_pin:pin})),
-    cambiarPin: async (id, actual, nuevo) => ok(await sb.rpc('cambiar_pin', {p_usuario_id:id, p_pin_actual:actual, p_pin_nuevo:nuevo})),
-    registrarAcceso: async (u) => { await sb.from('accesos').insert({usuario:u.nombre, rol:u.rol, navegador:navigator.userAgent.slice(0,180)}); },
-    accesos: async () => ok(await sb.from('accesos').select('*').order('fecha',{ascending:false}).limit(500)),
-    bitacora: async () => ok(await sb.from('bitacora').select('*').order('fecha',{ascending:false}).limit(500)),
-    log: async (usuario, accion, entidad, entidad_id, detalle) => { try{ await sb.from('bitacora').insert({usuario, accion, entidad, entidad_id:String(entidad_id??''), detalle}); }catch(e){} },
+    usuarios: async () => ok(await sb.from('cmp_usuarios').select('*').order('nombre')),
+    verificarPin: async (id, pin) => ok(await sb.rpc('cmp_verificar_pin', {p_usuario_id:id, p_pin:pin})),
+    cambiarPin: async (id, actual, nuevo) => ok(await sb.rpc('cmp_cambiar_pin', {p_usuario_id:id, p_pin_actual:actual, p_pin_nuevo:nuevo})),
+    registrarAcceso: async (u) => { await sb.from('cmp_accesos').insert({usuario:u.nombre, rol:u.rol, navegador:navigator.userAgent.slice(0,180)}); },
+    accesos: async () => ok(await sb.from('cmp_accesos').select('*').order('fecha',{ascending:false}).limit(500)),
+    bitacora: async () => ok(await sb.from('cmp_bitacora').select('*').order('fecha',{ascending:false}).limit(500)),
+    log: async (usuario, accion, entidad, entidad_id, detalle) => { try{ await sb.from('cmp_bitacora').insert({usuario, accion, entidad, entidad_id:String(entidad_id??''), detalle}); }catch(e){} },
     buscarProductos: async (q) => {
       q = q.trim(); if (!q) return [];
-      let qb = sb.from('productos').select('*').limit(60);
+      let qb = sb.from('cmp_productos').select('*').limit(60);
       if (/^\d+$/.test(q)) qb = qb.or(`clave.eq.${q},descripcion.ilike.%${q}%`);
       else q.split(/\s+/).filter(Boolean).forEach(w => { qb = qb.ilike('descripcion', `%${w.replace(/[%,()]/g,'')}%`); });
       return ok(await qb.order('clave'));
     },
-    productos: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves)], 200)) out = out.concat(ok(await sb.from('productos').select('*').in('clave', c))); return out; },
-    vigentes: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves)], 200)) out = out.concat(ok(await sb.from('asignaciones').select('*').eq('vigente',true).in('clave', c))); return out; },
-    asignacionesVigentes: async () => all(() => sb.from('asignaciones').select('*').eq('vigente',true).order('clave')),
-    ultimasAsignaciones: async (n=15) => ok(await sb.from('asignaciones').select('*').order('aprobado_en',{ascending:false}).limit(n)),
-    contarVigentes: async () => { const r = await sb.from('asignaciones').select('id',{count:'exact',head:true}).eq('vigente',true); if (r.error) throw new Error(r.error.message); return r.count||0; },
+    productos: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves)], 200)) out = out.concat(ok(await sb.from('cmp_productos').select('*').in('clave', c))); return out; },
+    vigentes: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves)], 200)) out = out.concat(ok(await sb.from('cmp_asignaciones').select('*').eq('vigente',true).in('clave', c))); return out; },
+    asignacionesVigentes: async () => all(() => sb.from('cmp_asignaciones').select('*').eq('vigente',true).order('clave')),
+    ultimasAsignaciones: async (n=15) => ok(await sb.from('cmp_asignaciones').select('*').order('aprobado_en',{ascending:false}).limit(n)),
+    contarVigentes: async () => { const r = await sb.from('cmp_asignaciones').select('id',{count:'exact',head:true}).eq('vigente',true); if (r.error) throw new Error(r.error.message); return r.count||0; },
     historialClave: async (clave) => ({
-      asignaciones: ok(await sb.from('asignaciones').select('*').eq('clave', clave).order('aprobado_en',{ascending:false})),
-      comparativos: ok(await sb.from('comparativos').select('*').contains('claves',[clave]).order('creado_en',{ascending:false}).limit(60)),
+      asignaciones: ok(await sb.from('cmp_asignaciones').select('*').eq('clave', clave).order('aprobado_en',{ascending:false})),
+      comparativos: ok(await sb.from('cmp_comparativos').select('*').contains('claves',[clave]).order('creado_en',{ascending:false}).limit(60)),
     }),
-    proveedores: async () => ok(await sb.from('proveedores').select('*').order('nombre')),
+    proveedores: async () => ok(await sb.from('cmp_proveedores').select('*').order('nombre')),
     guardarProveedor: async (p, usuario) => {
       const row = {...p}; delete row.id; delete row.estatus; delete row.creado_en; delete row.actualizado_en; delete row.estatus_por; delete row.estatus_en; delete row.estatus_motivo;
       row.nombre = String(row.nombre||'').trim().toUpperCase();
       row.actualizado_por = usuario;
-      if (p.id) return ok(await sb.from('proveedores').update(row).eq('id', p.id).select().single());
+      if (p.id) return ok(await sb.from('cmp_proveedores').update(row).eq('id', p.id).select().single());
       row.creado_por = usuario;
-      return ok(await sb.from('proveedores').insert(row).select().single());
+      return ok(await sb.from('cmp_proveedores').insert(row).select().single());
     },
-    estatusProveedor: async (id, estatus, motivo, uid, pin) => ok(await sb.rpc('estatus_proveedor', {p_id:id, p_estatus:estatus, p_motivo:motivo, p_usuario_id:uid, p_pin:pin})),
-    comparativos: async () => ok(await sb.from('comparativos').select(LIST_COLS).order('actualizado_en',{ascending:false}).limit(1000)),
-    comparativo: async (id) => ok(await sb.from('comparativos').select('*').eq('id', id).single()),
+    estatusProveedor: async (id, estatus, motivo, uid, pin) => ok(await sb.rpc('cmp_estatus_proveedor', {p_id:id, p_estatus:estatus, p_motivo:motivo, p_usuario_id:uid, p_pin:pin})),
+    comparativos: async () => ok(await sb.from('cmp_comparativos').select(LIST_COLS).order('actualizado_en',{ascending:false}).limit(1000)),
+    comparativo: async (id) => ok(await sb.from('cmp_comparativos').select('*').eq('id', id).single()),
     guardarComparativo: async (c, usuario) => {
       const row = {titulo:c.titulo, comprador:c.comprador, estatus:c.estatus, proveedores:c.proveedores, lineas:c.lineas,
                    notas:c.notas, importe_actual:c.importe_actual, importe_propuesto:c.importe_propuesto,
                    enviado_en:c.enviado_en||null, actualizado_por:usuario};
       if (c.id){
-        const d = ok(await sb.from('comparativos').update(row).eq('id', c.id).eq('actualizado_en', c.actualizado_en).select());
+        const d = ok(await sb.from('cmp_comparativos').update(row).eq('id', c.id).eq('actualizado_en', c.actualizado_en).select());
         if (!d.length) throw new Error('Otra persona modificó este comparativo mientras lo editabas, o ya no se puede editar. Recárgalo para ver la versión actual.');
         return d[0];
       }
       row.creado_por = usuario;
-      return ok(await sb.from('comparativos').insert(row).select().single());
+      return ok(await sb.from('cmp_comparativos').insert(row).select().single());
     },
-    aprobar: async (id, uid, pin, comentario) => ok(await sb.rpc('aprobar_comparativo', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario||null})),
-    rechazar: async (id, uid, pin, comentario) => ok(await sb.rpc('rechazar_comparativo', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario})),
-    guardarUsuario: async (adminId, adminPin, u) => ok(await sb.rpc('admin_guardar_usuario', {p_admin_id:adminId, p_admin_pin:adminPin, p_id:u.id||null, p_nombre:u.nombre, p_rol:u.rol, p_puesto:u.puesto||null, p_activo:u.activo!==false, p_pin_nuevo:u.pin||null})),
+    aprobar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_aprobar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario||null})),
+    rechazar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_rechazar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario})),
+    guardarUsuario: async (adminId, adminPin, u) => ok(await sb.rpc('cmp_guardar_usuario', {p_admin_id:adminId, p_admin_pin:adminPin, p_id:u.id||null, p_nombre:u.nombre, p_rol:u.rol, p_puesto:u.puesto||null, p_activo:u.activo!==false, p_pin_nuevo:u.pin||null})),
     cargarProductos: async (adminId, adminPin, filas, progreso) => {
       let n = 0; const partes = chunk(filas, 1000);
-      for (let i=0;i<partes.length;i++){ n += ok(await sb.rpc('admin_cargar_productos', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:partes[i]})); progreso && progreso(i+1, partes.length); }
+      for (let i=0;i<partes.length;i++){ n += ok(await sb.rpc('cmp_cargar_productos', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:partes[i]})); progreso && progreso(i+1, partes.length); }
       return n;
     },
   };
