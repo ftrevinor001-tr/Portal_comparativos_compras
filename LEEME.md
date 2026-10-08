@@ -59,3 +59,13 @@ Para cargar los archivos entra a **Administración → Proveedores por clave** y
 - **Proveedores:** se identifican por su **ID del sistema**, así no se duplican aunque el nombre cambie. A los proveedores que ya existan en el portal ponles su ID en **Proveedores → (abrir) → ID en el sistema**.
 - **Reemplazo:** con la casilla "Reemplazar" activada, solo se reemplaza lo de las claves que vienen en los archivos. Las demás claves y lo que viene de comparativos aprobados se conservan.
 - **Observaciones:** al final aparecen las de los compradores, para que decidas si hay que bloquear algo.
+
+## Anular la aprobación de un comparativo (actualización 04)
+**Instalación:** en Supabase ejecuta `supabase_update_04.sql` y reemplaza `index.html` en GitHub.
+
+- **Cómo se anula:** abre el comparativo aprobado, presiona **Anular aprobación**, escribe el motivo y confirma con tu PIN. Solo pueden hacerlo los aprobadores.
+- **Qué pasa con el comparativo:** queda como **ANULADO**. No se borra y sigue visible con el filtro "Anulado".
+- **Qué pasa con las claves:** cada una regresa al proveedor y precio que tenía antes de ese comparativo. Si alguna se aprobó después en otro comparativo, ese se conserva. Si no tenía proveedor antes, queda sin proveedor vigente.
+- **Historial:** en Consultar clave, la asignación anulada sigue en el historial, marcada como ANULADA.
+- **Bitácora:** queda registrado quién anuló, cuándo, el motivo y cuántas claves se restauraron.
+- **Para corregir:** usa **Duplicar para recotizar** sobre el comparativo anulado y vuelve a mandarlo a aprobación.

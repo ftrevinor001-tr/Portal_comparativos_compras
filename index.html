@@ -108,6 +108,8 @@ tr.click{cursor:pointer} tr.click:hover td{background:var(--accent-soft)}
 .pill.EN.REVISION,.pill.rev{background:var(--warn-soft);color:var(--warn)}
 .pill.APROBADO{background:var(--ok-soft);color:var(--ok)}
 .pill.RECHAZADO,.pill.SUSPENDIDO{background:var(--bad-soft);color:var(--bad)}
+.pill.ANULADO{background:var(--bad-soft);color:var(--bad)}
+tr.anulada td{color:var(--faint)}
 .pill.CANCELADO{background:var(--surface-2);color:var(--faint);text-decoration:line-through}
 .pill.EVAL{background:var(--info-soft);color:var(--info)}
 .up{color:var(--bad)} .down{color:var(--ok)}
@@ -271,6 +273,7 @@ function makeSupabaseApi(){
       row.creado_por = usuario;
       return ok(await sb.from('cmp_comparativos').insert(row).select().single());
     },
+    anular: async (id, uid, pin, motivo) => ok(await sb.rpc('cmp_anular', {p_id:id, p_usuario_id:uid, p_pin:pin, p_motivo:motivo})),
     aprobar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_aprobar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario||null})),
     rechazar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_rechazar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario})),
     guardarUsuario: async (adminId, adminPin, u) => ok(await sb.rpc('cmp_guardar_usuario', {p_admin_id:adminId, p_admin_pin:adminPin, p_id:u.id||null, p_nombre:u.nombre, p_rol:u.rol, p_puesto:u.puesto||null, p_activo:u.activo!==false, p_pin_nuevo:u.pin||null})),
@@ -401,6 +404,23 @@ function makeDemoApi(){
       Object.assign(c, {estatus:'APROBADO', aprobado_por:u.nombre, aprobado_en:t, comentario_aprob:comentario||null, actualizado_por:u.nombre, actualizado_en:t});
       bit(u.nombre, 'APROBÓ COMPARATIVO', 'comparativo', c.folio, {claves_asignadas:n, comentario, puesto:u.puesto});
       save(); return wait({ok:true, claves_asignadas:n, aprobado_por:u.nombre});
+    },
+    anular: async (id, uid, pin, motivo) => {
+      const u = valida(uid, pin, ['APROBADOR','ADMIN']);
+      if (!String(motivo||'').trim()) throw new Error('Escribe el motivo de la anulación');
+      const c = db.comparativos.find(x => x.id === id);
+      if (!c || c.estatus !== 'APROBADO') throw new Error(`Solo se anulan comparativos APROBADOS (estatus actual: ${c ? c.estatus : '—'})`);
+      let rest = 0, sin = 0, cons = 0; const t = now();
+      db.asignaciones.filter(a => a.comparativo_id === c.id && !a.anulada).forEach(a => {
+        if (a.vigente) {
+          Object.assign(a, {vigente:false, anulada:true, anulada_por:u.nombre, anulada_en:t});
+          const prev = db.asignaciones.filter(x => x.clave === a.clave && x.id < a.id && !x.anulada).sort((x, y) => y.id - x.id)[0];
+          if (prev) { prev.vigente = true; rest++; } else sin++;
+        } else { Object.assign(a, {anulada:true, anulada_por:u.nombre, anulada_en:t}); cons++; }
+      });
+      Object.assign(c, {estatus:'ANULADO', anulado_por:u.nombre, anulado_en:t, motivo_anulacion:motivo, actualizado_por:u.nombre, actualizado_en:t});
+      bit(u.nombre, 'ANULÓ APROBACIÓN', 'comparativo', c.folio, {motivo, claves_restauradas:rest, claves_sin_anterior:sin, claves_ya_reemplazadas:cons});
+      save(); return wait({ok:true, restauradas:rest, sin_anterior:sin, conservadas:cons});
     },
     rechazar: async (id, uid, pin, comentario) => {
       const u = valida(uid, pin, ['APROBADOR','ADMIN']);
@@ -631,7 +651,7 @@ function pedirPin({title, texto='', conComentario=false, comentarioObligatorio=f
       actions:[{label:'Cancelar', onClick:() => res(null)}, {label, cls, onClick: async (el) => {
         const pin = $('#pin-p', el).value, comentario = conComentario ? $('#pin-c', el).value.trim() : '';
         if (!pin) throw new Error('Escribe tu PIN');
-        if (comentarioObligatorio && !comentario) throw new Error('Escribe el comentario');
+        if (comentarioObligatorio && !comentario) throw new Error(`Escribe el ${etiqueta.toLowerCase()}`);
         const r = accion ? await accion(pin, comentario) : null;
         res({pin, comentario, r});
       }}]});
@@ -825,7 +845,7 @@ function bindClaveLinks(el){ $$('[data-clave]', el).forEach(a => a.onclick = (e)
 function tablaAsig(rows, corta=false){
   if (!rows.length) return `<div class="tbl-wrap"><div class="empty">Todavía no hay asignaciones. Se crean al aprobar un comparativo.</div></div>`;
   return `<div class="tbl-wrap"><table><thead><tr><th>Clave</th>${corta ? '' : '<th>Descripción</th>'}<th>Proveedor</th><th class="num">Precio</th><th class="num">Antes</th><th class="num">Var.</th><th>Aprobó</th><th>Folio</th>${corta ? '' : '<th>Comprador</th>'}</tr></thead><tbody>
-  ${rows.map(a => `<tr><td><a href="#" class="mono" data-clave="${a.clave}">${a.clave}</a>${corta ? `<div class="small muted">${esc((a.descripcion||'').slice(0,38))}</div>` : ''}</td>
+  ${rows.map(a => `<tr${a.anulada ? ' class="anulada"' : ''}><td><a href="#" class="mono" data-clave="${a.clave}">${a.clave}</a>${a.anulada ? ' <span class="pill ANULADO">ANULADA</span>' : ''}${corta ? `<div class="small muted">${esc((a.descripcion||'').slice(0,38))}</div>` : ''}</td>
     ${corta ? '' : `<td class="small">${esc(a.descripcion)}</td>`}
     <td>${esc(a.proveedor)}${a.clave_proveedor ? `<div class="small muted mono">${esc(a.clave_proveedor)}</div>` : ''}</td>
     <td class="num">${fmt$(a.precio)}</td><td class="num muted">${fmt$(a.precio_anterior)}</td><td class="num">${fmtPct(pct(a.precio, a.precio_anterior))}</td>
@@ -934,7 +954,7 @@ async function vComparativos(main){
     <div class="row"><h1>Comparativos</h1><span class="spacer"></span>
       <button class="btn" id="imp">Importar desde Excel</button><button class="btn pri" id="nuevo">Nuevo comparativo</button></div>
     <div class="row">
-      <div class="tabs" id="ft">${[['','Todos'],['BORRADOR','Borrador'],['EN REVISION','En revisión'],['APROBADO','Aprobado'],['RECHAZADO','Rechazado'],['CANCELADO','Cancelado']]
+      <div class="tabs" id="ft">${[['','Todos'],['BORRADOR','Borrador'],['EN REVISION','En revisión'],['APROBADO','Aprobado'],['RECHAZADO','Rechazado'],['ANULADO','Anulado'],['CANCELADO','Cancelado']]
         .map(([k,l]) => `<button data-e="${k}" class="${f.estatus === k ? 'on' : ''}">${l} <span class="muted">${k ? cmps.filter(c => c.estatus === k).length : cmps.length}</span></button>`).join('')}</div>
       <span class="spacer"></span>
       <input id="fq" type="search" placeholder="Folio, título, proveedor o clave" style="width:240px" value="${esc(f.q)}">
@@ -1080,6 +1100,7 @@ function pintarEditor(main){
       <div class="row" style="gap:8px" id="e-acts"></div>
     </div>
     ${c.estatus === 'APROBADO' ? `<div class="approval"><b>Aprobado por ${esc(c.aprobado_por)}</b> · ${fmtFH(c.aprobado_en)}${c.comentario_aprob ? `<div class="small">“${esc(c.comentario_aprob)}”</div>` : ''}<div class="small muted">Los proveedores y precios elegidos quedaron como vigentes para cada clave.</div></div>` : ''}
+    ${c.estatus === 'ANULADO' ? `<div class="approval rej"><b>Aprobación anulada por ${esc(c.anulado_por)}</b> · ${fmtFH(c.anulado_en)}<div class="small">Motivo: ${esc(c.motivo_anulacion||'')}</div><div class="small muted">Había sido aprobado por ${esc(c.aprobado_por)} el ${fmtFH(c.aprobado_en)}; sus claves regresaron al proveedor y precio que tenían antes.</div></div>` : ''}
     ${c.estatus === 'RECHAZADO' ? `<div class="approval rej"><b>Rechazado por ${esc(c.aprobado_por)}</b> · ${fmtFH(c.aprobado_en)}<div class="small">Motivo: ${esc(c.comentario_aprob||'')}</div><div class="small muted">Corrige y vuelve a enviar a aprobación.</div></div>` : ''}
     ${rev ? `<div class="note">En revisión desde el ${fmtFH(c.enviado_en)} · ${isAprob() ? 'Revisa los precios y aprueba o rechaza con tu PIN.' : 'Si necesitas cambiar algo, regrésalo a borrador.'}</div>` : ''}
     <div class="panel grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
@@ -1121,7 +1142,8 @@ function pintarAcciones(){
   if (c.estatus === 'EN REVISION') { b.push(['Regresar a borrador', 'e-back2', '']); if (isAprob()) { b.push(['Rechazar', 'e-rej', 'bad']); b.push(['Aprobar', 'e-apr', 'ok']); } }
   if (c.id && ['BORRADOR','RECHAZADO'].includes(c.estatus)) b.unshift(['Cancelar comparativo', 'e-cancel', 'ghost']);
   if (c.lineas.length) b.unshift(['Exportar Excel', 'e-xls', '']);
-  if (c.id && ['APROBADO','CANCELADO','RECHAZADO'].includes(c.estatus)) b.unshift(['Duplicar para recotizar', 'e-dup', '']);
+  if (c.id && ['APROBADO','CANCELADO','RECHAZADO','ANULADO'].includes(c.estatus)) b.unshift(['Duplicar para recotizar', 'e-dup', '']);
+  if (c.estatus === 'APROBADO' && isAprob()) b.push(['Anular aprobación', 'e-anular', 'bad']);
   el.innerHTML = b.map(([l, id, cls]) => `<button class="btn ${cls}" id="${id}">${l}</button>`).join('');
   const on = (id, fn) => { const x = $('#' + id); if (x) x.onclick = () => fn().catch(e => toast(errMsg(e), true)); };
   on('e-save', () => guardar());
@@ -1130,6 +1152,7 @@ function pintarAcciones(){
   on('e-cancel', async () => { if (await confirmar('Cancelar comparativo', 'El comparativo queda como CANCELADO. No se borra y sigue en el historial.', 'Cancelar comparativo', 'bad')) { E().c.estatus = 'CANCELADO'; await guardar('Comparativo cancelado'); } });
   on('e-apr', aprobar);
   on('e-rej', rechazar);
+  on('e-anular', anular);
   on('e-xls', async () => exportarComparativo());
   on('e-dup', async () => duplicar());
 }
@@ -1390,6 +1413,16 @@ async function aprobar(){
     accion:(pin, com) => API.aprobar(c.id, S.user.id, pin, com)});
   if (!r) return;
   toast(`Aprobado por ${S.user.nombre}: ${r.r.claves_asignadas} claves asignadas`);
+  go('editor', c.id);
+}
+async function anular(){
+  const c = E().c;
+  const r = await pedirPin({title:`Anular la aprobación de ${c.folio}`, label:'Anular aprobación', cls:'bad', conComentario:true, comentarioObligatorio:true, etiqueta:'Motivo de la anulación',
+    texto:`El comparativo queda como <b>ANULADO</b> (no se borra) y cada clave regresa al proveedor y precio que tenía antes de este comparativo. Si alguna clave ya se aprobó después en otro comparativo, ese se conserva. Lo que se cotizó sigue en el historial de proveedores por clave.`,
+    accion:(pin, com) => API.anular(c.id, S.user.id, pin, com)});
+  if (!r) return;
+  const x = r.r || {};
+  toast(`Aprobación anulada · ${x.restauradas || 0} clave(s) regresaron al proveedor anterior${x.sin_anterior ? ` · ${x.sin_anterior} quedaron sin proveedor vigente` : ''}${x.conservadas ? ` · ${x.conservadas} ya tenían un comparativo más reciente` : ''}`);
   go('editor', c.id);
 }
 async function rechazar(){
