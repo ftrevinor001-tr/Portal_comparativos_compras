@@ -37,3 +37,25 @@ Al importar un Excel con este formato:
 - Al capturar una clave en un comparativo nuevo, aparece su proveedor vigente y el último precio aprobado.
 - Los proveedores tienen estatus Aprobado, En evaluación o Suspendido. Solo los aprobadores cambian ese estatus, con su PIN.
 - Hay un registro de accesos y una bitácora de todos los cambios. No se borra nada.
+
+## Proveedores por clave y bloqueos (actualización 02)
+**Instalación:** en Supabase abre **SQL Editor → New query**, pega `supabase_update_02.sql` y presiona **Run**. Después reemplaza `index.html` en GitHub; `config.js` no cambia.
+
+- **Cargar el historial:** entra a **Administración → Proveedores por clave** y sube un Excel con Clave, Proveedor, Tipo (Compra / Cotización), Fecha, Precio y Clave del proveedor. Puedes usar la *Plantilla proveedores por clave.xlsx*.
+- **En el comparativo:** al capturar una clave, se agregan solos los proveedores a los que se les ha comprado o cotizado esa clave. Cada celda indica si fue *comprado* o *cotizado*. Si un proveedor con historial se queda sin precio, la celda se marca y el portal lo avisa al enviar a aprobación.
+- **Bloquear para una clave:** entra a **Consultar clave → Proveedores de esta clave → Bloquear**.
+- **Bloquear para todas las claves:** entra a **Proveedores**, abre el proveedor y presiona **Bloquear en todas las claves**.
+- **Ver y quitar bloqueos:** entra a **Administración → Bloqueos**.
+- **Qué hace un bloqueo:** el proveedor ya no se agrega solo, su celda queda deshabilitada y no se le puede asignar la clave, ni siquiera al aprobar.
+- **Quién bloquea:** solo los aprobadores, con su PIN. Todo queda en la bitácora.
+- **Al aprobar un comparativo:** todos los proveedores que dieron precio quedan registrados como *cotizados* para esa clave.
+
+## Archivos "Proveedores por clave" de cada comprador (actualización 03)
+**Instalación:** en Supabase ejecuta `supabase_update_03.sql`, igual que la 02. Después reemplaza `index.html` en GitHub.
+
+Para cargar los archivos entra a **Administración → Proveedores por clave** y selecciona uno o varios archivos de comprador a la vez. No hace falta consolidarlos en uno solo. Al cargarlos:
+- **Compras:** salen de la hoja *Detalle Clave-Proveedor*, con recepciones, importe, primera y última compra y la clave del producto del proveedor.
+- **Cotizados:** salen de las columnas *COTIZADO 1 a 5*.
+- **Proveedores:** se identifican por su **ID del sistema**, así no se duplican aunque el nombre cambie. A los proveedores que ya existan en el portal ponles su ID en **Proveedores → (abrir) → ID en el sistema**.
+- **Reemplazo:** con la casilla "Reemplazar" activada, solo se reemplaza lo de las claves que vienen en los archivos. Las demás claves y lo que viene de comparativos aprobados se conservan.
+- **Observaciones:** al final aparecen las de los compradores, para que decidas si hay que bloquear algo.

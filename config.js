@@ -1,10 +1,6 @@
 /* =====================================================================
    CONFIGURACIÓN DEL PORTAL DE COMPARATIVOS
-   Pega aquí los datos de tu proyecto de Supabase:
-   Supabase → Project Settings → API
-     - Project URL            → SUPABASE_URL
-     - anon / public key      → SUPABASE_ANON_KEY
-   Si los dejas vacíos, el portal abre en MODO DEMOSTRACIÓN.
+   Proyecto Supabase: Portal-seguimiento-de-pedidos (tablas cmp_*)
    ===================================================================== */
 window.APP_CONFIG = {
   SUPABASE_URL: 'https://rbakkrzxdjkpbmbcurng.supabase.co',

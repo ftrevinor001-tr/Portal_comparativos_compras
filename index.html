@@ -140,6 +140,11 @@ th.num{font-family:var(--f-display);font-size:.8rem}
 .cmp-grid td.key{background:var(--accent-soft)}
 .cmp-grid thead tr:nth-child(2) th{top:31px}
 .cmp-grid tfoot td{background:var(--surface-2);border-top:2px solid var(--line-2)}
+.cmp-grid td.bloq{background:repeating-linear-gradient(135deg,var(--surface-2) 0 6px,var(--surface) 6px 12px)}
+.cmp-grid td.falta input{border-color:var(--warn)}
+.tag-rel{font-family:var(--f-body);font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.tag-rel.comp{color:var(--ok)}
+.tag-bq{font-family:var(--f-body);font-size:.7rem;font-weight:600;color:var(--bad);text-transform:uppercase;letter-spacing:.03em}
 .cmp-grid td.entrega{font-weight:600;font-size:.74rem;text-align:center;border-left:2px solid var(--line-2);color:var(--fg)}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
 .chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line-2);background:var(--surface);border-radius:var(--r);padding:6px 10px;cursor:pointer}
@@ -246,9 +251,10 @@ function makeSupabaseApi(){
       const row = {...p}; delete row.id; delete row.estatus; delete row.creado_en; delete row.actualizado_en; delete row.estatus_por; delete row.estatus_en; delete row.estatus_motivo;
       row.nombre = String(row.nombre||'').trim().toUpperCase();
       row.actualizado_por = usuario;
-      if (p.id) return ok(await sb.from('cmp_proveedores').update(row).eq('id', p.id).select().single());
+      const dup = (r) => { if (r.error && /id_sistema/.test(r.error.message)) throw new Error('Ya hay otro proveedor con ese ID del sistema'); if (r.error && /duplicate|unique/i.test(r.error.message)) throw new Error('Ya existe un proveedor con ese nombre'); return ok(r); };
+      if (p.id) return dup(await sb.from('cmp_proveedores').update(row).eq('id', p.id).select().single());
       row.creado_por = usuario;
-      return ok(await sb.from('cmp_proveedores').insert(row).select().single());
+      return dup(await sb.from('cmp_proveedores').insert(row).select().single());
     },
     estatusProveedor: async (id, estatus, motivo, uid, pin) => ok(await sb.rpc('cmp_estatus_proveedor', {p_id:id, p_estatus:estatus, p_motivo:motivo, p_usuario_id:uid, p_pin:pin})),
     comparativos: async () => ok(await sb.from('cmp_comparativos').select(LIST_COLS).order('actualizado_en',{ascending:false}).limit(1000)),
@@ -268,6 +274,16 @@ function makeSupabaseApi(){
     aprobar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_aprobar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario||null})),
     rechazar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_rechazar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario})),
     guardarUsuario: async (adminId, adminPin, u) => ok(await sb.rpc('cmp_guardar_usuario', {p_admin_id:adminId, p_admin_pin:adminPin, p_id:u.id||null, p_nombre:u.nombre, p_rol:u.rol, p_puesto:u.puesto||null, p_activo:u.activo!==false, p_pin_nuevo:u.pin||null})),
+    relaciones: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves.map(Number))], 200)) out = out.concat(ok(await sb.from('cmp_clave_proveedor').select('*').in('clave', c))); return out; },
+    relacionesProveedor: async (provId) => all(() => sb.from('cmp_clave_proveedor').select('clave,tipo,ultima_fecha,ultimo_precio').eq('proveedor_id', provId).order('clave')),
+    bloqueos: async () => all(() => sb.from('cmp_bloqueos').select('*').eq('activo', true).order('bloqueado_en', {ascending:false})),
+    bloquear: async (provId, clave, motivo, uid, pin) => ok(await sb.rpc('cmp_bloquear', {p_prov:provId, p_clave:clave ?? null, p_motivo:motivo, p_usuario_id:uid, p_pin:pin})),
+    desbloquear: async (id, uid, pin) => ok(await sb.rpc('cmp_desbloquear', {p_id:id, p_usuario_id:uid, p_pin:pin})),
+    cargarRelaciones: async (adminId, adminPin, filas, reemplazar, claves, progreso) => {
+      let n = 0; const partes = chunk(filas, 1000);
+      for (let i=0;i<partes.length;i++){ n += ok(await sb.rpc('cmp_cargar_relaciones', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:partes[i], p_reemplazar: !!reemplazar && i === 0, p_claves: claves && claves.length ? claves : null})); progreso && progreso(i+1, partes.length); }
+      return n;
+    },
     cargarProductos: async (adminId, adminPin, filas, progreso) => {
       let n = 0; const partes = chunk(filas, 1000);
       for (let i=0;i<partes.length;i++){ n += ok(await sb.rpc('cmp_cargar_productos', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:partes[i]})); progreso && progreso(i+1, partes.length); }
@@ -278,7 +294,7 @@ function makeSupabaseApi(){
 
 /* ---------------- DEMOSTRACIÓN (localStorage) ---------------- */
 function makeDemoApi(){
-  const KEY = 'comparativos_demo_v2';
+  const KEY = 'comparativos_demo_v4';
   let db = null;
   try { db = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(e) {}
   if (!db) db = buildDemoSeed();
@@ -295,6 +311,7 @@ function makeDemoApi(){
     if (db.pins[uid] !== String(pin||'')) throw new Error('PIN incorrecto');
     return u;
   }
+  const bloqueadoDemo = (prov, clave) => db.bloqueos.some(b => b.activo && b.proveedor_id === prov && (b.clave == null || b.clave === clave)) || (db.proveedores.find(p => p.id === prov)||{}).estatus === 'SUSPENDIDO';
   const bit = (usuario, accion, entidad, entidad_id, detalle) => db.bitacora.unshift({id:nextId('bitacora'), fecha:now(), usuario, accion, entidad, entidad_id:String(entidad_id??''), detalle});
   const clavesDe = (lineas) => [...new Set(lineas.map(l => +l.clave).filter(Boolean))];
   const LIST = c => { const x = {...c}; delete x.lineas; return x; };
@@ -326,6 +343,7 @@ function makeDemoApi(){
       const nombre = String(p.nombre||'').trim().toUpperCase();
       if (!nombre) throw new Error('Escribe el nombre del proveedor');
       if (db.proveedores.some(x => x.nombre === nombre && x.id !== p.id)) throw new Error(`Ya existe un proveedor llamado ${nombre}`);
+      if (p.id_sistema != null && db.proveedores.some(x => x.id_sistema === p.id_sistema && x.id !== p.id)) throw new Error('Ya hay otro proveedor con ese ID del sistema');
       if (p.id){ const x = db.proveedores.find(x => x.id === p.id); const keep = {estatus:x.estatus, estatus_por:x.estatus_por, estatus_en:x.estatus_en, estatus_motivo:x.estatus_motivo, creado_por:x.creado_por, creado_en:x.creado_en};
         Object.assign(x, p, keep, {nombre, actualizado_por:usuario, actualizado_en:now()}); save(); return wait(x); }
       const x = {...p, id:nextId('proveedores'), nombre, estatus:'EN EVALUACION', creado_por:usuario, creado_en:now(), actualizado_por:usuario, actualizado_en:now()};
@@ -358,8 +376,17 @@ function makeDemoApi(){
       const c = db.comparativos.find(x => x.id === id);
       if (c.estatus !== 'EN REVISION') throw new Error(`Solo se aprueban comparativos EN REVISION (estatus actual: ${c.estatus})`);
       let n = 0; const t = now();
+      for (const l of c.lineas){ // validación antes de cambiar nada
+        if (l.elegido && ((l.precios||{})[l.elegido]||{}).neto != null && bloqueadoDemo(+l.elegido, +l.clave))
+          throw new Error(`El proveedor ${(db.proveedores.find(p => p.id === +l.elegido)||{}).nombre} está bloqueado para la clave ${l.clave}`);
+      }
       for (const l of c.lineas){
-        if (!l.elegido || !/^\d+$/.test(String(l.clave))) continue;
+        if (!/^\d+$/.test(String(l.clave))) continue;
+        Object.entries(l.precios||{}).forEach(([k, v]) => { if (v.neto == null || !db.proveedores.some(p => p.id === +k)) return;
+          let r = db.relaciones.find(x => x.clave === +l.clave && x.proveedor_id === +k);
+          if (!r) { r = {clave:+l.clave, proveedor_id:+k, tipo:'COTIZADO', fuente:'COMPARATIVO'}; db.relaciones.push(r); }
+          Object.assign(r, {ultima_fecha:t.slice(0,10), ultimo_precio:v.neto, clave_proveedor:v.clave_prov || r.clave_proveedor || null, actualizado_en:t}); });
+        if (!l.elegido) continue;
         const pr = (l.precios||{})[l.elegido]; const neto = pr && pr.neto;
         if (neto === null || neto === undefined || neto === '') continue;
         const prov = db.proveedores.find(p => p.id === +l.elegido);
@@ -393,6 +420,45 @@ function makeDemoApi(){
       if (u.pin) db.pins[x.id] = String(u.pin);
       bit(a.nombre, 'GUARDÓ USUARIO', 'usuario', nombre, {rol:u.rol, activo:u.activo}); save(); return wait(x.id);
     },
+    relaciones: async (claves) => { const k = new Set(claves.map(Number)); return wait(db.relaciones.filter(r => k.has(r.clave))); },
+    relacionesProveedor: async (provId) => wait(db.relaciones.filter(r => r.proveedor_id === provId).sort((a,b) => a.clave - b.clave)),
+    bloqueos: async () => wait(db.bloqueos.filter(b => b.activo)),
+    bloquear: async (provId, clave, motivo, uid, pin) => {
+      const u = valida(uid, pin, ['APROBADOR','ADMIN']);
+      if (!String(motivo||'').trim()) throw new Error('Escribe el motivo del bloqueo');
+      const p = db.proveedores.find(x => x.id === provId); if (!p) throw new Error('Proveedor no encontrado');
+      const ya = db.bloqueos.find(b => b.activo && b.proveedor_id === provId && (b.clave ?? null) === (clave ?? null)); if (ya) return ya.id;
+      const b = {id:nextId('bloqueos'), proveedor_id:provId, clave:clave ?? null, motivo, bloqueado_por:u.nombre, bloqueado_en:now(), activo:true};
+      db.bloqueos.push(b); bit(u.nombre, clave == null ? 'BLOQUEÓ PROVEEDOR (TODAS LAS CLAVES)' : 'BLOQUEÓ PROVEEDOR PARA CLAVE', 'proveedor', p.nombre, {clave, motivo}); save(); return b.id; },
+    desbloquear: async (id, uid, pin) => {
+      const u = valida(uid, pin, ['APROBADOR','ADMIN']); const b = db.bloqueos.find(x => x.id === id && x.activo);
+      if (!b) throw new Error('El bloqueo ya no está activo');
+      Object.assign(b, {activo:false, desbloqueado_por:u.nombre, desbloqueado_en:now()});
+      bit(u.nombre, 'DESBLOQUEÓ PROVEEDOR', 'proveedor', (db.proveedores.find(p => p.id === b.proveedor_id)||{}).nombre, {clave:b.clave}); save(); return true; },
+    cargarRelaciones: async (adminId, adminPin, filas, reemplazar, claves, progreso) => {
+      const a = valida(adminId, adminPin, ['ADMIN','APROBADOR']);
+      if (reemplazar) { const ks = claves && claves.length ? new Set(claves.map(Number)) : null; db.relaciones = db.relaciones.filter(r => r.fuente !== 'CARGA' || (ks && !ks.has(r.clave))); }
+      let n = 0;
+      for (const f of filas){
+        const ids = /^\d+$/.test(String(f.id_prov ?? '')) ? +f.id_prov : null;
+        if (!/^\d+$/.test(String(f.clave)) || (!String(f.proveedor||'').trim() && ids === null)) continue;
+        const nom = String(f.proveedor || '').trim().toUpperCase();
+        let p = ids !== null ? db.proveedores.find(x => x.id_sistema === ids) : null;
+        if (!p && nom) { p = db.proveedores.find(x => x.nombre === nom); if (p && ids !== null && p.id_sistema == null) p.id_sistema = ids; }
+        if (!p) { p = {id:nextId('proveedores'), nombre:nom || 'PROVEEDOR ' + ids, id_sistema:ids, estatus:'EN EVALUACION', creado_por:a.nombre, creado_en:now(), actualizado_por:a.nombre, actualizado_en:now(), notas:'Alta automática al cargar proveedores por clave'}; db.proveedores.push(p); }
+        const tipo = /COTIZ/i.test(f.tipo || '') ? 'COTIZADO' : 'COMPRADO';
+        let r = db.relaciones.find(x => x.clave === +f.clave && x.proveedor_id === p.id);
+        if (!r) { r = {clave:+f.clave, proveedor_id:p.id, tipo, ultima_fecha:null, ultimo_precio:null}; db.relaciones.push(r); }
+        r.tipo = (r.tipo === 'COMPRADO' || tipo === 'COMPRADO') ? 'COMPRADO' : 'COTIZADO';
+        if (f.precio != null && (!r.ultima_fecha || (f.fecha || '') >= r.ultima_fecha)) r.ultimo_precio = f.precio;
+        if (f.fecha && (!r.ultima_fecha || f.fecha > r.ultima_fecha)) r.ultima_fecha = f.fecha;
+        if (f.clave_prov) r.clave_proveedor = f.clave_prov;
+        if (f.primera_fecha && (!r.primera_fecha || f.primera_fecha < r.primera_fecha)) r.primera_fecha = f.primera_fecha;
+        if (f.recepciones != null) r.recepciones = f.recepciones; if (f.importe != null) r.importe = f.importe;
+        r.fuente = 'CARGA'; r.actualizado_en = now(); n++;
+      }
+      progreso && progreso(1,1); save(); return n;
+    },
     cargarProductos: async (adminId, adminPin, filas, progreso) => {
       valida(adminId, adminPin, ['ADMIN','APROBADOR']);
       const idx = new Map(db.productos.map(p => [p.clave, p]));
@@ -414,7 +480,7 @@ function makeDemoApi(){
 function buildDemoSeed(){
   const S = (window.DEMO_SEED || []).filter(r => /PVC HIDRAULICO/.test(r.descripcion));
   const iso = (d) => new Date(d).toISOString();
-  const db = {seq:{}, usuarios:[], pins:{}, productos:[], proveedores:[], comparativos:[], asignaciones:[], bitacora:[], accesos:[]};
+  const db = {seq:{}, usuarios:[], pins:{}, productos:[], proveedores:[], comparativos:[], asignaciones:[], bitacora:[], accesos:[], relaciones:[], bloqueos:[]};
   const users = [
     ['FERNANDO TREVIÑO','ADMIN','Jefe de Compras','1111'], ['JEFE DE COSTOS','APROBADOR','Jefe de Costos','2222'], ['GERENTE DE COMPRAS','APROBADOR','Gerente de Compras','3333'],
     ['SILVINO','COMPRADOR'], ['HECTOR','COMPRADOR'], ['KARLA ANAID','COMPRADOR'], ['FRANCISCO JAVIER','COMPRADOR'], ['MARIA VICTORIA','COMPRADOR'], ['IVAN','COMPRADOR'] ];
@@ -476,6 +542,18 @@ function buildDemoSeed(){
   db.seq.asignaciones = aid;
   db.bitacora.push({id:1, fecha:c1.aprobado_en, usuario:'GERENTE DE COMPRAS', accion:'APROBÓ COMPARATIVO', entidad:'comparativo', entidad_id:c1.folio, detalle:{claves_asignadas:aid}});
   db.seq.bitacora = 1;
+  // Ejemplo de proveedores por clave: a quién se le ha comprado y con quién solo se ha cotizado
+  db.proveedores.push({id:12, nombre:'KOBREX', estatus:'APROBADO', descuentos:'', creado_por:'FERNANDO TREVIÑO', creado_en:iso('2026-09-01'), actualizado_por:'FERNANDO TREVIÑO', actualizado_en:iso('2026-09-01')});
+  db.seq.proveedores = 12;
+  S2.forEach(r => {
+    db.relaciones.push({clave:r.clave, proveedor_id:8, tipo:'COMPRADO', ultima_fecha:'2026-08-20', ultimo_precio:r.ultimo, clave_proveedor:null, fuente:'CARGA'});
+    db.relaciones.push({clave:r.clave, proveedor_id:7, tipo:'COTIZADO', ultima_fecha:'2026-06-10', ultimo_precio:r.collado, clave_proveedor:null, fuente:'CARGA'});
+    db.relaciones.push({clave:r.clave, proveedor_id:12, tipo:'COTIZADO', ultima_fecha:'2026-03-15', ultimo_precio:null, clave_proveedor:null, fuente:'CARGA'});
+  });
+  pvc.forEach(l => { db.relaciones.push({clave:l.clave, proveedor_id:+l.elegido, tipo:'COMPRADO', ultima_fecha:'2026-09-02', ultimo_precio:l.u_compra, fuente:'CARGA'}); });
+  db.bloqueos.push({id:1, proveedor_id:12, clave:null, motivo:'No cumple tiempos de entrega', bloqueado_por:'GERENTE DE COMPRAS', bloqueado_en:iso('2026-09-15'), activo:true});
+  db.bloqueos.push({id:2, proveedor_id:11, clave:5575, motivo:'No maneja la medida de 4 m con mufa', bloqueado_por:'FERNANDO TREVIÑO', bloqueado_en:iso('2026-09-20'), activo:true});
+  db.seq.bloqueos = 2;
   return db;
 }
 
@@ -542,12 +620,12 @@ function confirmar(title, texto, label='Continuar', cls='pri'){
   });
 }
 /* Pide el PIN de un aprobador. Devuelve {pin, comentario} o null */
-function pedirPin({title, texto='', conComentario=false, comentarioObligatorio=false, label='Confirmar', cls='pri', accion}){
+function pedirPin({title, texto='', conComentario=false, comentarioObligatorio=false, etiqueta='Comentario', label='Confirmar', cls='pri', accion}){
   return new Promise(res => {
     const m = modal({title, body:`
       ${texto ? `<p>${texto}</p>` : ''}
       <div class="field"><label for="pin-u">Aprobador</label><input id="pin-u" type="text" value="${esc(S.user.nombre)}${S.user.puesto ? ' · ' + esc(S.user.puesto) : ''}" disabled></div>
-      ${conComentario ? `<div class="field"><label for="pin-c">Comentario${comentarioObligatorio ? ' (obligatorio)' : ' (opcional)'}</label><textarea id="pin-c"></textarea></div>` : ''}
+      ${conComentario ? `<div class="field"><label for="pin-c">${esc(etiqueta)}${comentarioObligatorio ? ' (obligatorio)' : ' (opcional)'}</label><textarea id="pin-c"></textarea></div>` : ''}
       <div class="field"><label for="pin-p">Tu PIN</label><input id="pin-p" type="password" inputmode="numeric" autocomplete="off"></div>
       <div class="err-msg"></div>`,
       actions:[{label:'Cancelar', onClick:() => res(null)}, {label, cls, onClick: async (el) => {
@@ -715,6 +793,33 @@ function tablaComparativos(rows, vacio){
       <td>${pill(c.estatus)}</td><td class="small muted">${fmtFH(c.actualizado_en)}</td></tr>`; }).join('')}
   </tbody></table></div>`;
 }
+/* Tabla de proveedores con historial y bloqueos para una clave */
+function tablaProvClave(clave, rels, bloqs){
+  const ids = [...new Set([...rels.map(r => r.proveedor_id), ...bloqs.filter(b => b.clave != null && +b.clave === +clave).map(b => b.proveedor_id)])];
+  if (!ids.length) return `<div class="tbl-wrap"><div class="empty">Sin proveedores registrados para esta clave. Se registran al cargar el archivo de proveedores por clave o al aprobar un comparativo.</div></div>`;
+  const filas = ids.map(id => { const r = rels.find(x => x.proveedor_id === id) || {}; const pv = provPorId(id) || {nombre:'#' + id};
+    const b = bloqs.find(x => x.proveedor_id === id && x.clave != null && +x.clave === +clave), g = bloqs.find(x => x.proveedor_id === id && x.clave == null);
+    return {id, r, pv, b, g}; }).sort((a, b) => (a.r.tipo === 'COMPRADO' ? 0 : 1) - (b.r.tipo === 'COMPRADO' ? 0 : 1) || (b.r.importe || 0) - (a.r.importe || 0) || a.pv.nombre.localeCompare(b.pv.nombre));
+  return `<div class="tbl-wrap"><table><thead><tr><th>Proveedor</th><th>Historial</th><th>Primera compra</th><th>Última vez</th><th class="num">Recepciones</th><th class="num">Importe</th><th class="num">Último precio</th><th>Clave proveedor</th><th>Estado</th>${isAprob() ? '<th></th>' : ''}</tr></thead><tbody>
+    ${filas.map(({id, r, pv, b, g}) => `<tr><td><b>${esc(pv.nombre)}</b> ${pv.estatus && pv.estatus !== 'APROBADO' ? pill(pv.estatus) : ''}${pv.id_sistema ? `<div class="small muted mono">ID ${pv.id_sistema}</div>` : ''}</td>
+      <td>${r.tipo ? `<span class="tag-rel ${r.tipo === 'COMPRADO' ? 'comp' : ''}">${r.tipo === 'COMPRADO' ? 'Comprado' : 'Solo cotizado'}</span>` : '<span class="muted small">—</span>'}</td>
+      <td class="small">${fmtF(r.primera_fecha)}</td><td class="small">${fmtF(r.ultima_fecha)}</td><td class="num">${r.recepciones != null ? fmtN(r.recepciones) : '—'}</td><td class="num">${r.importe != null ? fmtImp(r.importe) : '—'}</td><td class="num">${fmt$(r.ultimo_precio)}</td><td class="mono small">${esc(r.clave_proveedor || '')}</td>
+      <td class="small">${g ? `<span class="pill RECHAZADO">BLOQUEADO EN TODAS</span><div class="muted">${esc(g.motivo || '')}</div>` : b ? `<span class="pill RECHAZADO">BLOQUEADO</span><div class="muted">${esc(b.motivo || '')} · ${esc(b.bloqueado_por)}</div>` : pv.estatus === 'SUSPENDIDO' ? pill('SUSPENDIDO') : '<span class="pill APROBADO">SE COTIZA</span>'}</td>
+      ${isAprob() ? `<td>${b ? `<button class="btn sm" data-desbloq="${b.id}">Desbloquear</button>` : g ? '' : `<button class="btn sm bad" data-bloqc="${id}" data-clave-b="${clave}">Bloquear</button>`}</td>` : ''}</tr>`).join('')}
+  </tbody></table></div>`;
+}
+/* Botones Bloquear / Desbloquear dentro de una tabla (piden PIN) */
+function bindBloqueos(el, despues){
+  $$('[data-desbloq]', el).forEach(b => b.onclick = async () => {
+    const r = await pedirPin({title:'Desbloquear proveedor', label:'Desbloquear', texto:'El proveedor vuelve a pedirse en los comparativos.', accion:(pin) => API.desbloquear(+b.dataset.desbloq, S.user.id, pin)});
+    if (r) { toast('Proveedor desbloqueado'); despues(); } });
+  $$('[data-bloqc]', el).forEach(b => b.onclick = async () => {
+    const clave = b.dataset.claveB ? +b.dataset.claveB : null, pv = provPorId(b.dataset.bloqc) || {};
+    const r = await pedirPin({title:`Bloquear ${pv.nombre}${clave ? ' para la clave ' + clave : ' en todas las claves'}`, label:'Bloquear', cls:'bad', conComentario:true, comentarioObligatorio:true, etiqueta:'Motivo del bloqueo',
+      texto: clave ? 'Ya no se pedirá cotizar esta clave con este proveedor ni se le podrá asignar.' : 'Ya no se pedirá cotizar ninguna clave con este proveedor ni se le podrá asignar.',
+      accion:(pin, com) => API.bloquear(pv.id, clave, com, S.user.id, pin)});
+    if (r) { toast('Proveedor bloqueado'); despues(); } });
+}
 function bindCmpRows(el){ $$('[data-cmp]', el).forEach(r => r.onclick = () => go('editor', +r.dataset.cmp)); }
 function bindClaveLinks(el){ $$('[data-clave]', el).forEach(a => a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); go('clave', a.dataset.clave); }); }
 function tablaAsig(rows, corta=false){
@@ -756,7 +861,8 @@ async function vClave(main, q){
 }
 async function ficha(out, p){
   out.innerHTML = '<div class="loading">Cargando historial…</div>';
-  const h = await API.historialClave(p.clave);
+  const [h, rels, bloqs] = await Promise.all([API.historialClave(p.clave), API.relaciones([p.clave]).catch(() => []), API.bloqueos().catch(() => [])]);
+  await refrescarProveedores();
   const vig = h.asignaciones.find(a => a.vigente);
   const serie = [...h.asignaciones].reverse().map(a => ({x:new Date(a.aprobado_en), y:+a.precio}));
   // cotizaciones de esta clave en cada comparativo
@@ -787,6 +893,9 @@ async function ficha(out, p){
       </div>
       <div class="panel"><h3>Precio aprobado en el tiempo</h3>${serie.length > 1 ? sparkline(serie) : `<p class="muted small">Se dibuja cuando haya al menos dos aprobaciones para esta clave.</p>`}</div>
     </div>
+    <section class="stack" style="gap:8px"><div class="row"><h2>Proveedores de esta clave</h2><span class="muted small">Se agregan solos al comparativo cuando se captura la clave. Los bloqueados no se piden.</span><span class="spacer"></span>
+        ${isAprob() ? '<button class="btn sm" id="f-bloq">Bloquear un proveedor para esta clave</button>' : ''}</div>
+      ${tablaProvClave(p.clave, rels, bloqs)}</section>
     <section class="stack" style="gap:8px"><h2>Historial de asignaciones</h2>${tablaAsig(h.asignaciones.map(a => ({...a, descripcion:''})), true)}</section>
     <section class="stack" style="gap:8px"><h2>Cotizaciones en comparativos</h2>
       ${cots.length ? `<div class="tbl-wrap"><table><thead><tr><th>Folio</th><th>Fecha</th><th>Estatus</th><th>Comprador</th><th class="num">Cant.</th><th>Precios netos (de menor a mayor)</th><th>Elegido</th></tr></thead><tbody>
@@ -796,6 +905,20 @@ async function ficha(out, p){
       </tbody></table></div>` : `<div class="tbl-wrap"><div class="empty">Esta clave no aparece en ningún comparativo.</div></div>`}
     </section></div>`;
   $('#f-nuevo').onclick = () => go('editor', {nuevaClave:p.clave});
+  const refrescar = () => ficha(out, p);
+  if ($('#f-bloq')) $('#f-bloq').onclick = () => {
+    const bloqueados = new Set(bloqs.filter(b => b.clave == null || +b.clave === +p.clave).map(b => b.proveedor_id));
+    const ops = S.proveedores.filter(x => !bloqueados.has(x.id));
+    modal({title:`Bloquear proveedor para la clave ${p.clave}`, body:`
+      <div class="field"><label for="bq-p">Proveedor</label><select id="bq-p"><option value="">Selecciona…</option>${ops.map(x => `<option value="${x.id}">${esc(x.nombre)}${rels.some(r => r.proveedor_id === x.id) ? ' · con historial' : ''}</option>`).join('')}</select></div>
+      <div class="field"><label for="bq-m">Motivo</label><input id="bq-m" type="text" placeholder="Ej. no maneja esta medida"></div>
+      <div class="field"><label for="bq-pin">Tu PIN</label><input id="bq-pin" type="password" inputmode="numeric" autocomplete="off"></div><div class="err-msg"></div>`,
+      actions:[{label:'Cancelar'}, {label:'Bloquear', cls:'bad', onClick: async (el) => {
+        if (!$('#bq-p', el).value) throw new Error('Elige el proveedor');
+        await API.bloquear(+$('#bq-p', el).value, +p.clave, $('#bq-m', el).value.trim(), S.user.id, $('#bq-pin', el).value);
+        toast('Proveedor bloqueado para esta clave'); refrescar(); }}]});
+  };
+  bindBloqueos(out, refrescar);
   $$('[data-cmpl]', out).forEach(a => a.onclick = (e) => { e.preventDefault(); go('editor', +a.dataset.cmpl); });
   bindCmpRows(out); bindClaveLinks(out);
 }
@@ -846,19 +969,50 @@ async function vEditor(main, arg){
   else if (arg && arg.importado) c = arg.importado;
   else if (arg && arg.duplicar) c = arg.duplicar;
   else c = nuevoComparativo();
-  S.editor = {c, prod:new Map(), vig:new Map()};
+  S.editor = {c, prod:new Map(), vig:new Map(), rel:new Map()};
   await refrescarProveedores();
+  try { S.editor.bloq = await API.bloqueos(); } catch(e) { S.editor.bloq = []; }
   const claves = c.lineas.map(l => +l.clave).filter(Boolean);
   if (claves.length) await cargarRefs(claves);
   if (arg && arg.nuevaClave) await agregarClaves([arg.nuevaClave], false);
+  if (arg && arg.importado) sugerirProveedores(claves);
   if (arg && (arg.importado || arg.duplicar || arg.nuevaClave)) S.dirty = true;
   c.lineas.forEach((l, i) => calcLinea(i));
   pintarEditor(main);
 }
 async function cargarRefs(claves){
-  const [ps, vs] = await Promise.all([API.productos(claves), API.vigentes(claves)]);
+  const [ps, vs, rs] = await Promise.all([API.productos(claves), API.vigentes(claves), API.relaciones(claves).catch(() => [])]);
   ps.forEach(p => S.editor.prod.set(+p.clave, p));
   vs.forEach(v => S.editor.vig.set(+v.clave, v));
+  claves.forEach(k => { if (!S.editor.rel.has(+k)) S.editor.rel.set(+k, []); });
+  rs.forEach(r => { const a = S.editor.rel.get(+r.clave); if (!a.some(x => x.proveedor_id === r.proveedor_id)) a.push(r); });
+}
+/* Bloqueo activo del proveedor para la clave: por clave, para todas, o proveedor SUSPENDIDO */
+function bloqueoDe(provId, clave){
+  const b = (E().bloq || []).find(x => x.proveedor_id === +provId && (x.clave == null || +x.clave === +clave));
+  if (b) return b;
+  const p = provPorId(provId); if (p && p.estatus === 'SUSPENDIDO') return {motivo:'Proveedor suspendido', clave:null};
+  return null;
+}
+const bloqueoGlobal = (provId) => (E() && E().bloq || []).find(x => x.proveedor_id === +provId && x.clave == null) || ((provPorId(provId)||{}).estatus === 'SUSPENDIDO' ? {motivo:'Proveedor suspendido'} : null);
+const relDe = (provId, clave) => (E().rel.get(+clave) || []).find(r => r.proveedor_id === +provId);
+/* Proveedores con historial (comprado / cotizado) que faltan en el comparativo: se agregan solos */
+function sugerirProveedores(claves){
+  const c = E().c; if (!editable()) return [];
+  const usados = new Set(c.proveedores.map(p => +p.id)); const nuevos = [];
+  const rels = claves.flatMap(k => (E().rel.get(+k) || []).filter(r => !bloqueoDe(r.proveedor_id, k)));
+  rels.sort((a, b) => (a.tipo === 'COMPRADO' ? 0 : 1) - (b.tipo === 'COMPRADO' ? 0 : 1) || (b.importe || 0) - (a.importe || 0));
+  rels.forEach(r => {
+    if (usados.has(+r.proveedor_id)) return; const p = provPorId(r.proveedor_id); if (!p) return;
+    usados.add(p.id); nuevos.push(p.nombre);
+    c.proveedores.push({id:p.id, nombre:p.nombre, descuentos:p.descuentos || '', factor:'', flete:'', entrega_tipo:'', entrega:p.tiempo_entrega || '', condiciones:p.condiciones_pago || '', con_clave:false});
+  });
+  // clave del proveedor conocida
+  c.lineas.forEach(l => (E().rel.get(+l.clave) || []).forEach(r => { if (!r.clave_proveedor || !c.proveedores.some(p => +p.id === r.proveedor_id)) return;
+    l.precios = l.precios || {}; const pr = l.precios[r.proveedor_id] = l.precios[r.proveedor_id] || {};
+    if (!pr.clave_prov) { pr.clave_prov = r.clave_proveedor; const p = c.proveedores.find(x => +x.id === r.proveedor_id); if (p) p.con_clave = true; } }));
+  if (nuevos.length) toast(`Se agregaron los proveedores con historial: ${nuevos.join(', ')}`);
+  return nuevos;
 }
 const E = () => S.editor;
 const editable = () => !E().c.id || EDITABLE.includes(E().c.estatus);
@@ -878,6 +1032,7 @@ function calcLinea(i){
   let best = null; l._dif = {};
   c.proveedores.forEach(p => {
     const pr = l.precios[p.id]; if (!pr) return;
+    if (bloqueoDe(p.id, l.clave)) { pr.sinflete = null; pr.neto = null; return; }
     pr.sinflete = netoDe(pr.precio, p.descuentos, p.factor);
     pr.neto = pr.sinflete === null ? null : Math.round(pr.sinflete * (1 + (num(p.flete) || 0) / 100) * 1e6) / 1e6;
     l._dif[p.id] = pct(pr.sinflete, ult);
@@ -982,7 +1137,9 @@ function pintarAcciones(){
 function pintarProvs(){
   const c = E().c, ed = editable();
   $('#e-provs').innerHTML = c.proveedores.map(p => { const cat = provPorId(p.id) || {};
-    return `<button class="chip" data-pv="${p.id}"><b>${esc(p.nombre)}</b> ${cat.estatus && cat.estatus !== 'APROBADO' ? pill(cat.estatus) : ''}
+    const nRel = c.lineas.filter(l => relDe(p.id, l.clave)).length;
+    return `<button class="chip" data-pv="${p.id}"><b>${esc(p.nombre)}</b> ${bloqueoGlobal(p.id) ? '<span class="pill RECHAZADO">BLOQUEADO</span>' : ''} ${cat.estatus && cat.estatus !== 'APROBADO' ? pill(cat.estatus) : ''}
+      ${nRel ? `<small>historial en ${nRel} clave${nRel > 1 ? 's' : ''}</small>` : ''}
       ${p.descuentos ? `<small>desc. ${esc(p.descuentos)}</small>` : ''}${num(p.factor) && +p.factor !== 1 ? `<small>× ${esc(p.factor)}</small>` : ''}
       ${num(p.flete) ? `<small>+${esc(p.flete)}% flete</small>` : ''}${p.entrega_tipo ? `<small>${esc(p.entrega_tipo)}</small>` : ''}${p.entrega ? `<small>${esc(p.entrega)} días</small>` : ''}</button>`; }).join('')
     + (ed ? `<button class="chip" id="e-addp" style="border-style:dashed;color:var(--accent)">+ Agregar proveedor</button>` : '')
@@ -1019,7 +1176,7 @@ function pintarGrid(){
       <td><input data-f="antec" type="number" step="any" style="width:70px" value="${l.antec ?? ''}" ${dis}></td>
       <td class="num" data-c="crec"></td>` : ''}
     <td><input data-f="ultimo_precio" type="number" step="any" value="${l.ultimo_precio ?? ''}" ${dis}><span class="neto" data-c="origen"></span></td>
-    ${P.map(p => { const pr = (l.precios||{})[p.id] || {}; return `<td data-pc="${p.id}" class="pc"><input data-p="${p.id}" type="number" step="any" value="${pr.precio ?? ''}" ${dis} aria-label="Precio ${esc(p.nombre)}">
+    ${P.map(p => { const pr = (l.precios||{})[p.id] || {}; const bq = bloqueoDe(p.id, l.clave); return `<td data-pc="${p.id}" class="pc${bq ? ' bloq' : ''}"${bq ? ` title="Bloqueado: ${esc(bq.motivo || '')}"` : ''}><input data-p="${p.id}" type="number" step="any" value="${bq ? '' : (pr.precio ?? '')}" ${dis || (bq ? 'disabled' : '')} placeholder="${bq ? 'bloqueado' : ''}" aria-label="Precio ${esc(p.nombre)}">
       ${p.con_clave ? `<input data-k="${p.id}" class="txt" style="width:84px;margin-top:3px;font-size:.78rem" type="text" placeholder="clave prov." value="${esc(pr.clave_prov || '')}" ${dis}>` : ''}
       <span class="neto" data-n="${p.id}"></span></td><td class="num pd" data-d="${p.id}"></td>${num(p.flete) ? `<td class="num pf" data-fl="${p.id}"></td>` : ''}`; }).join('')}
     <td class="num key" data-c="min"></td><td class="num key" data-c="vsult"></td>
@@ -1064,7 +1221,10 @@ function pintarFila(i){
     const pr = (l.precios||{})[p.id] || {}, best = l._best === String(p.id);
     $(`td[data-pc="${p.id}"]`, tr).classList.toggle('best', best);
     const n = $(`[data-n="${p.id}"]`, tr);
-    n.textContent = (pr.sinflete != null && pr.precio != null && Math.abs(pr.sinflete - pr.precio) > 1e-9) ? 'neto ' + fmt$(pr.sinflete) : '';
+    const rel = relDe(p.id, l.clave), bq = bloqueoDe(p.id, l.clave);
+    const neto = (pr.sinflete != null && pr.precio != null && Math.abs(pr.sinflete - pr.precio) > 1e-9) ? 'neto ' + fmt$(pr.sinflete) : '';
+    n.innerHTML = bq ? '<span class="tag-bq">bloqueado</span>' : [rel ? `<span class="tag-rel ${rel.tipo === 'COMPRADO' ? 'comp' : ''}" title="${rel.ultima_fecha ? 'Último: ' + esc(fmtF(rel.ultima_fecha)) : ''}${rel.ultimo_precio != null ? ' ' + esc(fmt$(rel.ultimo_precio)) : ''}">${rel.tipo === 'COMPRADO' ? 'comprado' : 'cotizado'}</span>` : '', neto].filter(Boolean).join(' · ');
+    if (!bq && rel && pr.precio == null && editable()) $(`td[data-pc="${p.id}"]`, tr).classList.add('falta'); else $(`td[data-pc="${p.id}"]`, tr).classList.remove('falta');
     $(`[data-d="${p.id}"]`, tr).innerHTML = fmtPct((l._dif || {})[p.id] ?? null);
     const fl = $(`[data-fl="${p.id}"]`, tr); if (fl) { fl.innerHTML = pr.neto != null ? fmt$(pr.neto) : '—'; fl.classList.toggle('best', best); }
   });
@@ -1111,6 +1271,9 @@ async function agregarClaves(claves, repintar=true){
     calcLinea(c.lineas.length - 1);
   });
   marcarCambio();
+  const nuevosProv = sugerirProveedores(nuevas);
+  if (nuevosProv.length) c.lineas.forEach((l, i) => calcLinea(i));
+  if (nuevosProv.length && repintar) pintarProvs();
   if (sinCat.length) toast(`No están en el catálogo: ${sinCat.join(', ')}. Revisa que la clave sea correcta.`, true);
   else if (rep) toast(`${rep} clave(s) ya estaban en el comparativo`);
   if (repintar) { pintarGrid(); pintarSum(); pintarAcciones(); }
@@ -1135,7 +1298,7 @@ function pegarExcel(){
 
 function agregarProvCmp(){
   const c = E().c; const usados = new Set(c.proveedores.map(p => +p.id));
-  const disp = S.proveedores.filter(p => !usados.has(p.id) && p.estatus !== 'SUSPENDIDO');
+  const disp = S.proveedores.filter(p => !usados.has(p.id) && !bloqueoGlobal(p.id));
   modal({title:'Agregar proveedor al comparativo', body:`
     <div class="field"><label for="ap-s">Proveedor del catálogo</label><select id="ap-s"><option value="">Selecciona…</option>${disp.map(p => `<option value="${p.id}">${esc(p.nombre)}${p.estatus !== 'APROBADO' ? ' (en evaluación)' : ''}</option>`).join('')}</select></div>
     <div class="field"><label for="ap-n">O da de alta uno nuevo</label><input id="ap-n" type="text" placeholder="Nombre del proveedor"><span class="small muted">Queda “en evaluación” hasta que un aprobador lo apruebe.</span></div>
@@ -1146,7 +1309,7 @@ function agregarProvCmp(){
       if (!p && nombre) { p = S.proveedores.find(x => x.nombre === nombre); if (p && usados.has(p.id)) throw new Error('Ese proveedor ya está en el comparativo'); }
       if (!p && nombre) { p = await API.guardarProveedor({nombre}, S.user.nombre); API.log(S.user.nombre, 'ALTA PROVEEDOR', 'proveedor', p.nombre); await refrescarProveedores(); }
       if (!p) throw new Error('Elige un proveedor o escribe el nombre de uno nuevo');
-      if (p.estatus === 'SUSPENDIDO') throw new Error('Ese proveedor está suspendido');
+      if (bloqueoGlobal(p.id)) throw new Error(`${p.nombre} está bloqueado para todas las claves: ${bloqueoGlobal(p.id).motivo || ''}`);
       c.proveedores.push({id:p.id, nombre:p.nombre, descuentos:p.descuentos || '', factor:'', flete:'', entrega_tipo:'', entrega:p.tiempo_entrega || '', condiciones:p.condiciones_pago || '', con_clave:false});
       c.lineas.forEach((l, i) => calcLinea(i)); marcarCambio(); pintarProvs(); pintarGrid(); pintarSum();
     }}]});
@@ -1203,12 +1366,16 @@ async function enviar(){
   if (sinPrecio.length) err.push(`Claves sin ningún precio: ${sinPrecio.slice(0,10).join(', ')}${sinPrecio.length > 10 ? '…' : ''}`);
   const sinMot = c.lineas.filter(l => l.elegido && l._best && l.elegido !== l._best && !String(l.motivo||'').trim()).map(l => l.clave);
   if (sinMot.length) err.push(`Escribe el motivo en las claves donde no elegiste el mejor precio: ${sinMot.slice(0,10).join(', ')}`);
-  const susp = c.lineas.filter(l => l.elegido && (provPorId(l.elegido)||{}).estatus === 'SUSPENDIDO').map(l => l.clave);
-  if (susp.length) err.push(`Hay claves asignadas a un proveedor suspendido: ${susp.join(', ')}`);
+  const bloq = c.lineas.filter(l => l.elegido && bloqueoDe(l.elegido, l.clave)).map(l => l.clave);
+  if (bloq.length) err.push(`Hay claves asignadas a un proveedor bloqueado: ${bloq.join(', ')}`);
   if (err.length) { modal({title:'Falta información', body:`<ul style="margin:0;padding-left:18px">${err.map(e => `<li>${esc(e)}</li>`).join('')}</ul>`, actions:[{label:'Entendido', cls:'pri'}]}); return; }
   const evals = [...new Set(c.lineas.filter(l => l.elegido && (provPorId(l.elegido)||{}).estatus === 'EN EVALUACION').map(l => provPorId(l.elegido).nombre))];
   const sinAsig = c.lineas.filter(l => !l.elegido).length;
-  const avisos = [evals.length ? `Se eligieron proveedores en evaluación: <b>${evals.map(esc).join(', ')}</b>.` : '', sinAsig ? `${sinAsig} clave(s) quedan sin asignar.` : ''].filter(Boolean).join(' ');
+  // proveedores con historial (no bloqueados) a los que no se les pidió precio
+  const faltan = c.lineas.map(l => ({clave:l.clave, provs:(E().rel.get(+l.clave) || []).filter(r => !bloqueoDe(r.proveedor_id, l.clave) && ((l.precios||{})[r.proveedor_id]||{}).precio == null)
+    .map(r => (provPorId(r.proveedor_id)||{}).nombre).filter(Boolean)})).filter(x => x.provs.length);
+  const avisos = [evals.length ? `Se eligieron proveedores en evaluación: <b>${evals.map(esc).join(', ')}</b>.` : '', sinAsig ? `${sinAsig} clave(s) quedan sin asignar.` : '',
+    faltan.length ? `<br><br><b>Faltan precios de proveedores con historial en ${faltan.length} clave(s):</b><br>${faltan.slice(0, 8).map(x => `${x.clave}: ${x.provs.map(esc).join(', ')}`).join('<br>')}${faltan.length > 8 ? '<br>…' : ''}<br><span class="small muted">Si alguno no debe cotizar esa clave, bloquéalo desde Consultar clave.</span>` : ''].filter(Boolean).join(' ');
   if (!(await confirmar('Enviar a aprobación', `${avisos ? avisos + '<br><br>' : ''}Lo podrán aprobar el Jefe de Compras, el Jefe de Costos o el Gerente de Compras.`, 'Enviar'))) return;
   const prev = c.estatus; c.estatus = 'EN REVISION'; c.enviado_en = new Date().toISOString();
   try { await guardar('Enviado a aprobación'); API.log(S.user.nombre, 'ENVIÓ A APROBACIÓN', 'comparativo', c.folio); }
@@ -1477,21 +1644,24 @@ async function vProveedores(main){
   await refrescarProveedores();
   const vig = await API.asignacionesVigentes();
   const cuenta = {}; vig.forEach(a => { cuenta[a.proveedor_id] = (cuenta[a.proveedor_id] || 0) + 1; });
+  const bloqs = await API.bloqueos().catch(() => []);
+  const bqTxt = (id) => { const g = bloqs.find(b => b.proveedor_id === id && b.clave == null); const n = bloqs.filter(b => b.proveedor_id === id && b.clave != null).length;
+    return g ? '<span class="pill RECHAZADO">TODAS LAS CLAVES</span>' : n ? `<span class="pill rev">${n} clave${n > 1 ? 's' : ''}</span>` : '—'; };
   let fe = '';
   main.innerHTML = `<div class="stack">
     <div class="row"><h1>Proveedores</h1><span class="spacer"></span><button class="btn pri" id="pn">Nuevo proveedor</button></div>
     <div class="row"><div class="tabs" id="pt">${[['','Todos'],['APROBADO','Aprobados'],['EN EVALUACION','En evaluación'],['SUSPENDIDO','Suspendidos']].map(([k,l]) => `<button data-e="${k}" class="${k === fe ? 'on' : ''}">${l} <span class="muted">${k ? S.proveedores.filter(p => p.estatus === k).length : S.proveedores.length}</span></button>`).join('')}</div>
-      <span class="spacer"></span><input id="pq" type="search" placeholder="Buscar proveedor" style="width:220px"></div>
+      <span class="spacer"></span><input id="pq" type="search" placeholder="Nombre o ID del sistema" style="width:220px"></div>
     <div id="pl"></div>
     <p class="small muted">Cualquier comprador puede dar de alta un proveedor; queda en evaluación. Solo un aprobador, con su PIN, lo aprueba o lo suspende.</p></div>`;
   const pinta = () => {
     const q = $('#pq').value.trim().toUpperCase();
-    const rs = S.proveedores.filter(p => (!fe || p.estatus === fe) && (!q || p.nombre.includes(q)));
-    $('#pl').innerHTML = rs.length ? `<div class="tbl-wrap"><table><thead><tr><th>Proveedor</th><th>Estatus</th><th>Contacto</th><th>Condiciones</th><th class="num">Crédito</th><th class="num">Entrega</th><th>Descuentos</th><th class="num">Claves vigentes</th><th>Estatus por</th></tr></thead><tbody>
-      ${rs.map(p => `<tr class="click" data-id="${p.id}"><td><b>${esc(p.nombre)}</b>${p.razon_social ? `<div class="small muted">${esc(p.razon_social)}</div>` : ''}</td><td>${pill(p.estatus)}</td>
+    const rs = S.proveedores.filter(p => (!fe || p.estatus === fe) && (!q || p.nombre.includes(q) || String(p.id_sistema ?? '') === q));
+    $('#pl').innerHTML = rs.length ? `<div class="tbl-wrap"><table><thead><tr><th>Proveedor</th><th>Estatus</th><th>Contacto</th><th>Condiciones</th><th class="num">Crédito</th><th class="num">Entrega</th><th>Descuentos</th><th class="num">Claves vigentes</th><th>Bloqueo</th><th>Estatus por</th></tr></thead><tbody>
+      ${rs.map(p => `<tr class="click" data-id="${p.id}"><td><b>${esc(p.nombre)}</b>${p.id_sistema ? ` <span class="small muted mono">ID ${p.id_sistema}</span>` : ''}${p.razon_social ? `<div class="small muted">${esc(p.razon_social)}</div>` : ''}</td><td>${pill(p.estatus)}</td>
         <td class="small">${esc(p.contacto || '')}${p.telefono ? `<div class="muted">${esc(p.telefono)}</div>` : ''}</td><td class="small">${esc(p.condiciones_pago || '')}</td>
         <td class="num">${p.dias_credito ? p.dias_credito + ' d' : '—'}</td><td class="num">${p.tiempo_entrega ? p.tiempo_entrega + ' d' : '—'}</td><td class="mono small">${esc(p.descuentos || '')}</td>
-        <td class="num">${(cuenta[p.id] || 0).toLocaleString('es-MX')}</td><td class="small muted">${p.estatus_por ? `${esc(p.estatus_por)}<br>${fmtF(p.estatus_en)}` : '—'}</td></tr>`).join('')}
+        <td class="num">${(cuenta[p.id] || 0).toLocaleString('es-MX')}</td><td>${bqTxt(p.id)}</td><td class="small muted">${p.estatus_por ? `${esc(p.estatus_por)}<br>${fmtF(p.estatus_en)}` : '—'}</td></tr>`).join('')}
       </tbody></table></div>` : `<div class="tbl-wrap"><div class="empty">Sin proveedores con este filtro.</div></div>`;
     $$('[data-id]', $('#pl')).forEach(r => r.onclick = () => editarProveedor(provPorId(r.dataset.id)));
   };
@@ -1514,7 +1684,7 @@ function editarProveedor(p){
   }
   acts.push({label:'Guardar', cls:'pri', onClick: async (el) => {
     const v = (id) => $('#' + id, el).value.trim();
-    const row = {id:p.id, nombre:v('pv-n'), razon_social:v('pv-r') || null, rfc:v('pv-rfc') || null, contacto:v('pv-c') || null, telefono:v('pv-t') || null, correo:v('pv-m') || null,
+    const row = {id:p.id, nombre:v('pv-n'), id_sistema:aNum(v('pv-ids')), razon_social:v('pv-r') || null, rfc:v('pv-rfc') || null, contacto:v('pv-c') || null, telefono:v('pv-t') || null, correo:v('pv-m') || null,
       condiciones_pago:v('pv-cp') || null, dias_credito:aNum(v('pv-dc')), tiempo_entrega:aNum(v('pv-te')), descuentos:v('pv-d') || null, notas:v('pv-no') || null};
     if (!row.nombre) throw new Error('Escribe el nombre');
     const r = await API.guardarProveedor(row, S.user.nombre);
@@ -1524,13 +1694,27 @@ function editarProveedor(p){
   modal({title: n ? 'Nuevo proveedor' : p.nombre, body:`
     ${n ? '' : `<div class="row small">${pill(p.estatus)} ${p.estatus_por ? `<span class="muted">por ${esc(p.estatus_por)} · ${fmtF(p.estatus_en)}${p.estatus_motivo ? ` · “${esc(p.estatus_motivo)}”` : ''}</span>` : ''}</div>`}
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
-      ${F('pv-n','Nombre corto',p.nombre)}${F('pv-r','Razón social',p.razon_social)}${F('pv-rfc','RFC',p.rfc)}
+      ${F('pv-n','Nombre',p.nombre)}${F('pv-ids','ID en el sistema',p.id_sistema,'number')}${F('pv-r','Razón social',p.razon_social)}${F('pv-rfc','RFC',p.rfc)}
       ${F('pv-c','Contacto',p.contacto)}${F('pv-t','Teléfono',p.telefono)}${F('pv-m','Correo',p.correo,'text')}
       ${F('pv-cp','Condiciones de pago',p.condiciones_pago,'text','Crédito, contado, flete…')}${F('pv-dc','Días de crédito',p.dias_credito,'number')}${F('pv-te','Tiempo de entrega (días)',p.tiempo_entrega,'number')}
       ${F('pv-d','Descuentos habituales',p.descuentos,'text','15+4+1')}
     </div>
     <div class="field"><label for="pv-no">Notas</label><textarea id="pv-no">${esc(p.notas || '')}</textarea></div>
-    <div class="err-msg"></div>`, actions:acts});
+    ${n ? '' : '<div id="pv-bq" class="stack" style="gap:8px"><div class="loading">Cargando bloqueos…</div></div>'}
+    <div class="err-msg"></div>`, actions:acts, onOpen: n ? null : async (el) => {
+      const [bloqs, rels] = await Promise.all([API.bloqueos().catch(() => []), API.relacionesProveedor(p.id).catch(() => [])]);
+      const mios = bloqs.filter(b => b.proveedor_id === p.id), g = mios.find(b => b.clave == null), porClave = mios.filter(b => b.clave != null);
+      const comp = rels.filter(r => r.tipo === 'COMPRADO').length;
+      const box = $('#pv-bq', el); if (!box) return;
+      box.innerHTML = `<hr style="border:0;border-top:1px solid var(--line);width:100%">
+        <div class="row"><h3>Claves y bloqueos</h3><span class="small muted">Historial en ${rels.length.toLocaleString('es-MX')} claves (${comp.toLocaleString('es-MX')} compradas, ${(rels.length - comp).toLocaleString('es-MX')} solo cotizadas)</span></div>
+        <div class="row">${g ? `<span class="pill RECHAZADO">BLOQUEADO EN TODAS LAS CLAVES</span><span class="small muted">${esc(g.motivo || '')} · ${esc(g.bloqueado_por)} · ${fmtF(g.bloqueado_en)}</span>${isAprob() ? `<button class="btn sm" data-desbloq="${g.id}">Desbloquear</button>` : ''}`
+          : `<span class="small">Se pide en comparativos.</span>${isAprob() ? `<button class="btn sm bad" data-bloqc="${p.id}">Bloquear en todas las claves</button>` : ''}`}</div>
+        ${porClave.length ? `<div class="tbl-wrap"><table><thead><tr><th>Clave bloqueada</th><th>Motivo</th><th>Bloqueó</th>${isAprob() ? '<th></th>' : ''}</tr></thead><tbody>
+          ${porClave.map(b => `<tr><td class="mono">${b.clave}</td><td class="small">${esc(b.motivo || '')}</td><td class="small">${esc(b.bloqueado_por)}<div class="muted">${fmtF(b.bloqueado_en)}</div></td>${isAprob() ? `<td><button class="btn sm" data-desbloq="${b.id}">Desbloquear</button></td>` : ''}</tr>`).join('')}
+          </tbody></table></div>` : '<span class="small muted">Sin claves bloqueadas individualmente. Para bloquear una clave entra a Consultar clave.</span>'}`;
+      bindBloqueos(box, () => { el.remove(); go('proveedores'); });
+    }});
 }
 
 /* ====================================================================
@@ -1539,13 +1723,15 @@ function editarProveedor(p){
 async function vAdmin(main){
   const tab = store.get('cmp_admtab') || 'usuarios';
   main.innerHTML = `<div class="stack"><div class="row"><h1>Administración</h1></div>
-    <div class="tabs" id="at">${[['usuarios','Usuarios'],['catalogo','Cargar catálogo'],['accesos','Registro de accesos'],['bitacora','Bitácora'],['pin','Cambiar mi PIN']].map(([k,l]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="tabs" id="at">${[['usuarios','Usuarios'],['catalogo','Cargar catálogo'],['relaciones','Proveedores por clave'],['bloqueos','Bloqueos'],['accesos','Registro de accesos'],['bitacora','Bitácora'],['pin','Cambiar mi PIN']].map(([k,l]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div id="ab"></div></div>`;
   $$('#at button').forEach(b => b.onclick = () => { store.set('cmp_admtab', b.dataset.t); vAdmin(main); });
   const ab = $('#ab');
   if (tab === 'usuarios') return admUsuarios(ab);
   if (tab === 'catalogo') return admCatalogo(ab);
   if (tab === 'pin') return admPin(ab);
+  if (tab === 'relaciones') return admRelaciones(ab);
+  if (tab === 'bloqueos') return admBloqueos(ab);
   const rows = tab === 'accesos' ? await API.accesos() : await API.bitacora();
   ab.innerHTML = tab === 'accesos'
     ? `<div class="tbl-wrap"><table><thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Rol</th><th>Navegador</th></tr></thead><tbody>${rows.map(r => `<tr><td class="small">${fmtFH(r.fecha)}</td><td>${esc(r.usuario)}</td><td class="small">${esc(r.rol || '')}</td><td class="small muted">${esc((r.navegador || '').slice(0, 90))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Sin registros</td></tr>'}</tbody></table></div>`
@@ -1624,6 +1810,180 @@ function admCatalogo(ab){
       finally { $('#cx-go').disabled = false; }
     };
   }
+}
+/* Carga del archivo de proveedores por clave (comprados y solo cotizados) */
+const CAMPOS_REL = [['','Ignorar'],['clave','Clave'],['proveedor','Proveedor'],['id_prov','ID del proveedor (sistema)'],['tipo','Tipo (compra / cotización)'],['fecha','Fecha'],['precio','Precio'],['clave_prov','Clave del proveedor']];
+function adivinaRel(h){
+  const n = normH(h);
+  if (['clave','id','sku','codigo','articulo','cve'].includes(n)) return 'clave';
+  if (['idproveedor','idprov','numproveedor','noproveedor','cveproveedor'].includes(n)) return 'id_prov';
+  if (n.startsWith('proveedor') || n === 'prov' || n.startsWith('razonsocial') || n === 'nombreproveedor') return 'proveedor';
+  if (n.startsWith('tipo') || n.startsWith('movimiento') || n.startsWith('origen')) return 'tipo';
+  if (n.includes('fecha') || n.startsWith('ultimacompra')) return 'fecha';
+  if (n.startsWith('precio') || n.startsWith('costo') || n.startsWith('ultimoprecio')) return 'precio';
+  if (n.includes('claveprod') || n.includes('claveprov') || n.includes('codigoprov') || n.includes('skuprov')) return 'clave_prov';
+  return '';
+}
+/* Junta filas repetidas clave + proveedor: COMPRADO gana; fecha y precio más recientes */
+function consolidarRel(filas){
+  const m = new Map();
+  filas.forEach(f => {
+    const k = f.clave + '|' + (f.id_prov != null ? 'id' + f.id_prov : f.proveedor), x = m.get(k);
+    if (!x) { m.set(k, {...f}); return; }
+    if (f.tipo === 'COMPRADO') { x.tipo = 'COMPRADO'; ['recepciones','importe','primera_fecha'].forEach(c => { if (f[c] != null) x[c] = f[c]; }); }
+    if (f.fecha && (!x.fecha || f.fecha >= x.fecha)) { x.fecha = f.fecha; if (f.precio != null) x.precio = f.precio; }
+    if (f.clave_prov) x.clave_prov = f.clave_prov;
+    if (!x.proveedor && f.proveedor) x.proveedor = f.proveedor;
+  });
+  return [...m.values()];
+}
+/* Formato "Proveedores por clave — COMPRADOR" (hojas Base Proveedores, Detalle Clave-Proveedor, Catálogo Proveedores) */
+function esFormatoComprador(wb){ return wb.SheetNames.some(n => normH(n) === 'baseproveedores'); }
+function leerFormatoComprador(wb, archivo){
+  const hoja = (nombre) => { const n = wb.SheetNames.find(x => normH(x) === nombre); return n ? XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:null, blankrows:false}) : null; };
+  const esClave = (v) => /^\d+$/.test(String(v ?? '').trim());
+  const cat = new Map();
+  (hoja('catalogoproveedores') || []).slice(1).forEach(r => { if (r && r[1] && esClave(r[0])) cat.set(String(r[1]).trim().toUpperCase(), +r[0]); });
+  const base = hoja('baseproveedores');
+  const hr = base.findIndex(r => normH((r||[])[0]) === 'clave');
+  if (hr < 0) throw new Error(`${archivo}: no encontré el encabezado CLAVE en la hoja Base Proveedores`);
+  const H = base[hr].map(normH), col = (f) => H.findIndex(f);
+  const cComp = col(h => h === 'comprador'), cDesc = col(h => h.startsWith('descrip')), cObs = col(h => h.startsWith('observaciones'));
+  const cots = H.map((h, j) => h.startsWith('cotizado') && /\d/.test(h) ? j : -1).filter(j => j >= 0);
+  const provs = H.map((h, j) => /^proveedor\d+$/.test(h) ? j : -1).filter(j => j >= 0);
+  const filas = [], claves = [], obs = []; const compradores = new Set(); let nCot = 0, nComp = 0;
+  base.slice(hr + 1).forEach(r => { r = r || []; if (!esClave(r[0])) return;
+    const clave = String(r[0]).trim(); claves.push(+clave);
+    if (cComp >= 0 && r[cComp]) compradores.add(String(r[cComp]).trim().toUpperCase());
+    if (cObs >= 0 && r[cObs] != null && String(r[cObs]).trim()) obs.push({clave:+clave, descripcion:cDesc >= 0 ? r[cDesc] : '', texto:String(r[cObs]).trim()});
+    cots.forEach(j => { const nom = r[j] == null ? '' : String(r[j]).trim(); if (!nom) return;
+      const idc = normH(H[j + 1]).startsWith('idcot') && esClave(r[j + 1]) ? +r[j + 1] : (cat.get(nom.toUpperCase()) ?? null);
+      filas.push({clave, id_prov:idc, proveedor:nom.toUpperCase(), tipo:'COTIZADO'}); nCot++; });
+  });
+  const det = hoja('detalleclaveproveedor');
+  if (det && det.length > 1) {
+    const D = det[0].map(normH), dc = (f) => D.findIndex(f);
+    const iC = dc(h => h === 'clave'), iId = dc(h => h === 'idproveedor'), iP = dc(h => h === 'proveedor'), iR = dc(h => h.includes('recepciones')),
+          iI = dc(h => h.startsWith('importe')), iF1 = dc(h => h.startsWith('primeracompra')), iF2 = dc(h => h.startsWith('ultimacompra')), iCP = dc(h => h.startsWith('claveprod'));
+    det.slice(1).forEach(r => { r = r || []; if (!esClave(r[iC])) return;
+      filas.push({clave:String(r[iC]).trim(), id_prov:esClave(r[iId]) ? +r[iId] : null, proveedor:r[iP] ? String(r[iP]).trim().toUpperCase() : '', tipo:'COMPRADO',
+        fecha:iF2 >= 0 ? aFecha(r[iF2]) : null, primera_fecha:iF1 >= 0 ? aFecha(r[iF1]) : null, recepciones:iR >= 0 ? aNum(r[iR]) : null,
+        importe:iI >= 0 ? aNum(r[iI]) : null, clave_prov:iCP >= 0 && r[iCP] != null ? String(r[iCP]).trim() : null}); nComp++; });
+  } else {
+    base.slice(hr + 1).forEach(r => { r = r || []; if (!esClave(r[0])) return;
+      provs.forEach(j => { const nom = r[j] == null ? '' : String(r[j]).trim(); if (!nom || /SIN COMPRAS/i.test(nom)) return;
+        const id = normH(H[j - 1]).startsWith('idprov') && esClave(r[j - 1]) ? +r[j - 1] : (cat.get(nom.toUpperCase()) ?? null);
+        filas.push({clave:String(r[0]).trim(), id_prov:id, proveedor:nom.toUpperCase(), tipo:'COMPRADO'}); nComp++; }); });
+  }
+  return {archivo, compradores:[...compradores], claves, filas, obs, nComp, nCot};
+}
+function admRelaciones(ab){
+  ab.innerHTML = `<div class="panel stack">
+    <p style="margin:0">Sube los archivos <b>Proveedores por clave</b> de cada comprador (puedes elegir varios a la vez) o cualquier Excel con clave y proveedor. Al capturar una clave en un comparativo se agregan solos los proveedores a los que se les ha <b>comprado</b> y con los que solo se ha <b>cotizado</b>, excepto los bloqueados.</p>
+    <p class="small muted" style="margin:0">En el formato por comprador se leen solas las compras de la hoja <i>Detalle Clave-Proveedor</i> (recepciones, importe, primera y última compra, clave del proveedor), los cotizados de las columnas <i>COTIZADO 1 a 5</i> y las observaciones. Los proveedores se identifican por su ID del sistema; los que no existan se dan de alta en evaluación. Una clave comprada nunca regresa a “solo cotizada”.</p>
+    <div class="row"><input id="rx-f" type="file" accept=".xlsx,.xls,.csv" multiple><select id="rx-h" style="width:200px" hidden></select></div>
+    <div id="rx-map"></div></div>`;
+  let wb = null;
+  $('#rx-f').onchange = async (e) => { const files = [...e.target.files]; if (!files.length) return;
+    $('#rx-map').innerHTML = '<div class="loading">Leyendo archivos…</div>'; $('#rx-h').hidden = true;
+    let libros;
+    try { libros = await Promise.all(files.map(async f => ({nombre:f.name, wb:await leerExcel(f)}))); }
+    catch(err) { $('#rx-map').innerHTML = `<div class="err-msg">${esc(errMsg(err))}</div>`; return; }
+    const comp = libros.filter(x => esFormatoComprador(x.wb));
+    if (comp.length) {
+      if (comp.length < libros.length) toast(`Se ignoraron ${libros.length - comp.length} archivo(s) que no tienen el formato por comprador`, true);
+      try { return formatoComprador(comp.map(x => leerFormatoComprador(x.wb, x.nombre))); }
+      catch(err) { $('#rx-map').innerHTML = `<div class="err-msg">${esc(errMsg(err))}</div>`; return; }
+    }
+    if (libros.length > 1) { $('#rx-map').innerHTML = '<div class="err-msg">Para un Excel libre sube un solo archivo a la vez.</div>'; return; }
+    wb = libros[0].wb;
+    $('#rx-h').innerHTML = wb.SheetNames.map(n => `<option>${esc(n)}</option>`).join(''); $('#rx-h').hidden = wb.SheetNames.length < 2; $('#rx-h').onchange = mapear; mapear(); };
+
+  async function subir(filas, reemplazar, claves, st, btn){
+    btn.disabled = true; st.textContent = 'Cargando…';
+    try {
+      const n = await API.cargarRelaciones(S.user.id, $('#rx-pin').value, filas, reemplazar, claves, (i, t) => { st.textContent = `Cargando… ${Math.round(i / t * 100)}%`; });
+      const comp = filas.filter(f => f.tipo === 'COMPRADO').length;
+      API.log(S.user.nombre, 'CARGÓ PROVEEDORES POR CLAVE', 'relaciones', '', {combinaciones:n, compradas:comp, solo_cotizadas:filas.length - comp});
+      st.textContent = `Listo: ${n.toLocaleString('es-MX')} combinaciones clave–proveedor (${comp.toLocaleString('es-MX')} compradas, ${(filas.length - comp).toLocaleString('es-MX')} solo cotizadas).`;
+      toast('Proveedores por clave cargados'); await refrescarProveedores(); return true;
+    } catch(err) { st.textContent = ''; toast(errMsg(err), true); return false; }
+    finally { btn.disabled = false; }
+  }
+
+  function formatoComprador(res){
+    const filas = consolidarRel(res.flatMap(r => r.filas)), claves = [...new Set(res.flatMap(r => r.claves))], obs = res.flatMap(r => r.obs);
+    const nComp = filas.filter(f => f.tipo === 'COMPRADO').length;
+    const provIds = new Set(filas.map(f => f.id_prov ?? f.proveedor));
+    const nuevos = [...provIds].filter(p => !S.proveedores.some(x => (typeof p === 'number' ? x.id_sistema === p : x.nombre === p))).length;
+    $('#rx-map').innerHTML = `
+      <div class="tbl-wrap"><table><thead><tr><th>Archivo</th><th>Comprador</th><th class="num">Claves</th><th class="num">Compras</th><th class="num">Cotizados capturados</th><th class="num">Observaciones</th></tr></thead><tbody>
+        ${res.map(r => `<tr><td class="small">${esc(r.archivo)}</td><td>${esc(r.compradores.join(', '))}</td><td class="num">${r.claves.length.toLocaleString('es-MX')}</td><td class="num">${r.nComp.toLocaleString('es-MX')}</td><td class="num">${r.nCot.toLocaleString('es-MX')}</td><td class="num">${r.obs.length}</td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="small" style="margin:0">Total: <b>${claves.length.toLocaleString('es-MX')}</b> claves · <b>${filas.length.toLocaleString('es-MX')}</b> combinaciones clave–proveedor (${nComp.toLocaleString('es-MX')} compradas, ${(filas.length - nComp).toLocaleString('es-MX')} solo cotizadas) · <b>${provIds.size}</b> proveedores${nuevos ? `, de los cuales <b>${nuevos}</b> se darán de alta en evaluación` : ''}.</p>
+      <label class="row small" style="gap:8px"><input id="rx-r" type="checkbox" checked> Reemplazar lo que se cargó antes para estas claves (lo que viene de comparativos aprobados se conserva)</label>
+      <div class="row"><div class="field" style="width:180px"><label for="rx-pin">Tu PIN</label><input id="rx-pin" type="password" inputmode="numeric"></div><button class="btn pri" id="rx-go" style="align-self:flex-end">Cargar ${res.length > 1 ? res.length + ' archivos' : 'archivo'}</button><span id="rx-st" class="small muted" style="align-self:flex-end"></span></div>
+      <div id="rx-obs"></div>`;
+    $('#rx-go').onclick = async () => {
+      if (!filas.length) return toast('Los archivos no traen proveedores', true);
+      const ok = await subir(filas, $('#rx-r').checked, claves, $('#rx-st'), $('#rx-go'));
+      if (ok && obs.length) {
+        $('#rx-obs').innerHTML = `<h3 style="margin-top:8px">Observaciones de los compradores</h3><p class="small muted" style="margin:0 0 6px">Revísalas: si un proveedor ya no debe surtir una clave, bloquéalo desde la clave.</p>
+          <div class="tbl-wrap"><table><thead><tr><th>Clave</th><th>Descripción</th><th>Observación</th></tr></thead><tbody>
+          ${obs.map(o => `<tr><td><a href="#" class="mono" data-clave="${o.clave}">${o.clave}</a></td><td class="small">${esc(o.descripcion || '')}</td><td>${esc(o.texto)}</td></tr>`).join('')}</tbody></table></div>`;
+        bindClaveLinks($('#rx-obs'));
+      }
+    };
+  }
+
+  function mapear(){
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[$('#rx-h').value || wb.SheetNames[0]], {header:1, raw:true, defval:null, blankrows:false});
+    const hr = Math.max(0, aoa.findIndex(r => (r||[]).filter(v => v !== null && v !== '').length >= 2));
+    const head = aoa[hr] || [], data = aoa.slice(hr + 1);
+    const cols = head.map((h, j) => ({j, h, campo:adivinaRel(h), muestra:data.slice(0, 3).map(r => (r||[])[j]).filter(v => v !== null)})).filter(c => c.h !== null || c.muestra.length);
+    $('#rx-map').innerHTML = `<p class="small muted" style="margin:0">${data.length.toLocaleString('es-MX')} filas encontradas.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Col.</th><th>Encabezado</th><th>Ejemplo</th><th>Es…</th></tr></thead><tbody>
+      ${cols.map((c, k) => `<tr><td class="mono">${XLSX.utils.encode_col(c.j)}</td><td>${esc(c.h ?? '')}</td><td class="small mono">${c.muestra.map(v => esc(v instanceof Date ? fmtF(v) : String(v).slice(0, 24))).join(' · ')}</td>
+        <td><select data-c="${k}" style="width:220px">${CAMPOS_REL.map(([v,l]) => `<option value="${v}" ${c.campo === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+        <div class="field"><label for="rx-t">Si no hay columna Tipo, todas las filas son…</label><select id="rx-t"><option value="COMPRADO">Compras</option><option value="COTIZADO">Solo cotizaciones</option></select></div>
+        <label class="row small" style="gap:8px;align-self:end"><input id="rx-r" type="checkbox"> Reemplazar lo que se cargó antes para las claves del archivo (lo que viene de comparativos aprobados se conserva)</label>
+      </div>
+      <div class="row"><div class="field" style="width:180px"><label for="rx-pin">Tu PIN</label><input id="rx-pin" type="password" inputmode="numeric"></div><button class="btn pri" id="rx-go" style="align-self:flex-end">Cargar proveedores por clave</button><span id="rx-st" class="small muted" style="align-self:flex-end"></span></div>`;
+    $$('[data-c]', $('#rx-map')).forEach(s => s.onchange = () => { cols[+s.dataset.c].campo = s.value; });
+    $('#rx-go').onclick = async () => {
+      const usados = cols.filter(c => c.campo), col = (f) => usados.find(c => c.campo === f);
+      if (!col('clave') || !(col('proveedor') || col('id_prov'))) return toast('Indica la columna Clave y la del Proveedor (nombre o ID)', true);
+      if (new Set(usados.map(c => c.campo)).size !== usados.length) return toast('Hay dos columnas asignadas al mismo campo', true);
+      const tipoDef = $('#rx-t').value;
+      const brutas = [];
+      data.forEach(r => { r = r || [];
+        const clave = String(r[col('clave').j] ?? '').trim(), prov = col('proveedor') ? String(r[col('proveedor').j] ?? '').trim().toUpperCase() : '';
+        const idp = col('id_prov') && /^\d+$/.test(String(r[col('id_prov').j] ?? '').trim()) ? +r[col('id_prov').j] : null;
+        if (!/^\d+$/.test(clave) || (!prov && idp === null)) return;
+        const tipoTxt = col('tipo') ? String(r[col('tipo').j] ?? '') : '';
+        const tipo = /cotiz/i.test(tipoTxt) ? 'COTIZADO' : /compra|comprad|entrada|factura|recep|orden|\boc\b/i.test(tipoTxt) ? 'COMPRADO' : tipoDef;
+        brutas.push({clave, id_prov:idp, proveedor:prov, tipo, fecha:col('fecha') ? aFecha(r[col('fecha').j]) : null, precio:col('precio') ? aNum(r[col('precio').j]) : null,
+          clave_prov:col('clave_prov') && r[col('clave_prov').j] != null ? String(r[col('clave_prov').j]).trim() : null});
+      });
+      const filas = consolidarRel(brutas);
+      if (!filas.length) return toast('No encontré filas con clave numérica y proveedor', true);
+      await subir(filas, $('#rx-r').checked, [...new Set(filas.map(f => +f.clave))], $('#rx-st'), $('#rx-go'));
+    };
+  }
+}
+
+async function admBloqueos(ab){
+  await refrescarProveedores();
+  const bloqs = await API.bloqueos();
+  const nom = (id) => (provPorId(id) || {}).nombre || '#' + id;
+  ab.innerHTML = `<div class="row" style="margin-bottom:10px"><span class="muted small">Un proveedor bloqueado no se agrega solo ni se puede asignar. Para todas las claves se bloquea desde Proveedores; para una clave, desde Consultar clave.</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Proveedor</th><th>Alcance</th><th>Motivo</th><th>Bloqueó</th>${isAprob() ? '<th></th>' : ''}</tr></thead><tbody>
+    ${bloqs.map(b => `<tr><td><b>${esc(nom(b.proveedor_id))}</b></td><td>${b.clave == null ? '<span class="pill RECHAZADO">TODAS LAS CLAVES</span>' : `Clave <a href="#" class="mono" data-clave="${b.clave}">${b.clave}</a>`}</td>
+      <td class="small">${esc(b.motivo || '')}</td><td class="small">${esc(b.bloqueado_por)}<div class="muted">${fmtF(b.bloqueado_en)}</div></td>
+      ${isAprob() ? `<td><button class="btn sm" data-desbloq="${b.id}">Desbloquear</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="5" class="empty">No hay proveedores bloqueados.</td></tr>`}
+    </tbody></table></div>`;
+  bindClaveLinks(ab); bindBloqueos(ab, () => admBloqueos(ab));
 }
 function admPin(ab){
   ab.innerHTML = `<form class="panel stack" id="pf" style="max-width:380px">
