@@ -127,8 +127,12 @@ tr.anulada td{color:var(--faint)}
 .cmp-grid td.best{background:var(--best)}
 .cmp-grid .neto{display:block;font-family:var(--f-mono);font-size:.74rem;color:var(--muted);text-align:right;margin-top:2px}
 .cmp-grid th.prov{text-align:center;background:var(--accent-soft);color:var(--fg)}
-.cmp-grid .stick{position:sticky;left:0;background:var(--surface);z-index:1}
-.cmp-grid th.stick{z-index:3;background:var(--surface-2)}
+.tbl-wrap.grid-scroll{overflow:auto;max-height:calc(100vh - 96px)}
+.cmp-grid th{z-index:2}
+.cmp-grid .fz{position:sticky;background:var(--surface);z-index:1}
+.cmp-grid th.fz{z-index:4;background:var(--surface-2)}
+.cmp-grid .fz-last{box-shadow:inset -2px 0 0 var(--line-2)}
+.cmp-grid td.desc{min-width:200px;max-width:240px}
 .cmp-grid select{padding:4px 6px;font-size:.86rem;width:170px}
 th.num{font-family:var(--f-display);font-size:.8rem}
 .vig{font-size:.8rem;line-height:1.2}
@@ -140,7 +144,6 @@ th.num{font-family:var(--f-display);font-size:.8rem}
 .cmp-grid td.pf{font-family:var(--f-mono);font-size:.86rem}
 .cmp-grid th.key{background:var(--accent);color:var(--accent-fg)}
 .cmp-grid td.key{background:var(--accent-soft)}
-.cmp-grid thead tr:nth-child(2) th{top:31px}
 .cmp-grid tfoot td{background:var(--surface-2);border-top:2px solid var(--line-2)}
 .cmp-grid td.bloq{background:repeating-linear-gradient(135deg,var(--surface-2) 0 6px,var(--surface) 6px 12px)}
 .cmp-grid td.falta input{border-color:var(--warn)}
@@ -1119,7 +1122,7 @@ function pintarEditor(main){
         <button class="btn" id="e-paste">Pegar desde Excel</button>` : ''}
         <label class="row small" style="gap:6px"><input id="e-dem" type="checkbox"> Datos de demanda</label>
       </div>
-      <div class="tbl-wrap" id="e-grid"></div>
+      <div class="tbl-wrap grid-scroll" id="e-grid" tabindex="-1"></div>
       <div class="panel sumbar" id="e-sum"></div>
     </section></div>`;
   $('#e-back').onclick = () => go('comparativos');
@@ -1134,6 +1137,10 @@ function pintarEditor(main){
   }
   $('#e-dem').onchange = (e) => { c.ver_demanda = e.target.checked; if (editable()) marcarCambio(); pintarGrid(); };
   pintarAcciones(); pintarProvs(); pintarGrid(); pintarSum();
+  const g = $('#e-grid');
+  g.addEventListener('wheel', alinearGrid, {passive:true});
+  g.addEventListener('focusin', alinearGrid);
+  g.addEventListener('scroll', () => { if (g.scrollTop > 0 || g.scrollLeft > 0) alinearGrid(); }, {passive:true});
 }
 
 function pintarAcciones(){
@@ -1182,15 +1189,15 @@ function pintarGrid(){
   const span = (p) => 2 + (num(p.flete) ? 1 : 0);
   const fijo = 3 + (dem ? 5 : 0) + 1; // columnas antes de los proveedores
   $('#e-grid').innerHTML = `<table class="cmp-grid"><thead>
-    <tr><th class="stick" rowspan="2">ID</th><th rowspan="2">Descripción</th><th class="num" rowspan="2">Cantidad</th>
+    <tr><th rowspan="2">ID</th><th rowspan="2">Descripción</th><th class="num" rowspan="2">Cantidad</th>
       ${dem ? '<th rowspan="2">Clasificación</th><th class="num" rowspan="2">Inversión</th><th class="num" rowspan="2">Pron</th><th class="num" rowspan="2">Antec</th><th class="num" rowspan="2">Crec.</th>' : ''}
-      <th class="num" rowspan="2">Último precio</th>
+      <th class="num" rowspan="2" data-ult>Último precio</th>
       ${P.map(p => `<th class="prov grp" colspan="${span(p)}">${esc(p.nombre)}</th>`).join('')}
       <th class="num key" rowspan="2">Costo mínimo</th><th class="num key" rowspan="2">Dif vs últ. costo</th><th class="key" rowspan="2">Proveedor asignado</th><th class="num" rowspan="2">Impacto $</th><th rowspan="2">Motivo</th>${ed ? '<th rowspan="2"></th>' : ''}</tr>
     <tr>${P.map(p => `<th class="prov sub">Precio</th><th class="prov sub">Dif vs últ. $</th>${num(p.flete) ? `<th class="prov sub">+ ${esc(p.flete)}% flete</th>` : ''}`).join('')}</tr>
   </thead><tbody>
   ${c.lineas.map((l, i) => { const v = vigDe(l); return `<tr data-i="${i}">
-    <td class="stick"><a href="#" class="mono" data-clave="${l.clave}">${esc(l.clave)}</a></td>
+    <td><a href="#" class="mono" data-clave="${l.clave}">${esc(l.clave)}</a></td>
     <td class="desc">${esc(l.descripcion || '')}${E().prod.has(+l.clave) || l.descripcion ? '' : '<span class="up small">No está en el catálogo</span>'}${v ? `<span class="vigtag">Vigente: <b>${esc(v.proveedor)}</b> ${fmt$(v.precio)}</span>` : ''}</td>
     <td><input data-f="cantidad" type="number" step="any" value="${l.cantidad ?? ''}" ${dis}></td>
     ${dem ? `<td><input data-f="clasificacion" class="txt" list="dl-clasif" type="text" style="width:150px" value="${esc(l.clasificacion || '')}" ${dis}></td>
@@ -1208,10 +1215,11 @@ function pintarGrid(){
     <td><input data-f="motivo" class="txt" type="text" value="${esc(l.motivo || '')}" ${dis}></td>
     ${ed ? `<td><button class="btn ghost sm" data-del aria-label="Quitar clave">✕</button></td>` : ''}
   </tr>`; }).join('')}</tbody>
-  <tfoot><tr><td class="stick"></td><td colspan="${fijo - 1}" class="small muted" style="text-align:right">Tipo de entrega</td>
+  <tfoot><tr><td></td><td colspan="${fijo - 1}" class="small muted" style="text-align:right">Tipo de entrega</td>
     ${P.map(p => `<td colspan="${span(p)}" class="small entrega">${esc(p.entrega_tipo || '—')}</td>`).join('')}<td colspan="${5 + (ed ? 1 : 0)}"></td></tr></tfoot></table>
   <datalist id="dl-clasif">${CLASIFS.map(x => `<option value="${x}">`).join('')}</datalist>`;
   c.lineas.forEach((l, i) => pintarFila(i));
+  congelar();
   bindClaveLinks($('#e-grid'));
   if (!ed) return;
   $$('#e-grid tr[data-i]').forEach(tr => {
@@ -1237,6 +1245,34 @@ function pintarGrid(){
     const x = sig.children[idx] && $('input', sig.children[idx]); if (x) { x.focus(); x.select(); }
   });
 }
+/* Congela encabezados (arriba) y columnas hasta "Último precio" (izquierda), como en Excel */
+function congelar(){
+  const t = $('#e-grid table.cmp-grid'); if (!t) return;
+  const h1 = t.tHead.rows[0], h2 = t.tHead.rows[1];
+  const nFz = [...h1.cells].findIndex(th => th.hasAttribute('data-ult')) + 1;
+  // en pantallas angostas solo se congela la clave
+  const n = window.innerWidth < 900 ? 1 : nFz;
+  const lefts = []; let x = 0;
+  [...h1.cells].slice(0, nFz).forEach((th, j) => { lefts[j] = x; x += th.getBoundingClientRect().width; });
+  const marca = (cell, j) => { cell.classList.remove('fz', 'fz-last'); cell.style.left = '';
+    if (j < n) { cell.classList.add('fz'); cell.style.left = lefts[j] + 'px'; if (j === n - 1) cell.classList.add('fz-last'); } };
+  [...h1.cells].forEach((th, j) => { if (j < nFz) marca(th, j); });
+  [...t.tBodies[0].rows].forEach(tr => [...tr.cells].forEach((td, j) => { if (j < nFz) marca(td, j); }));
+  if (h2) { const top = h1.getBoundingClientRect().height; [...h2.cells].forEach(th => th.style.top = top + 'px'); }
+}
+window.addEventListener('resize', () => { if (S.view === 'editor') congelar(); });
+/* Al moverse dentro de la tabla, la página se acomoda para que los encabezados no queden bajo la barra superior */
+function alinearGrid(e){
+  const g = $('#e-grid'), barra = $('.top'); if (!g || !barra) return;
+  const limite = barra.getBoundingClientRect().bottom + 6, r = g.getBoundingClientRect();
+  if (r.top >= limite - 1) return;
+  if (e && e.type === 'wheel') {
+    const alFinal = g.scrollTop + g.clientHeight >= g.scrollHeight - 2;
+    if (e.deltaY > 0 && alFinal) return;   // ya terminó la tabla: deja seguir la página hacia abajo
+  }
+  window.scrollBy(0, r.top - limite);
+}
+
 function pintarFila(i){
   const c = E().c, l = c.lineas[i], tr = $(`#e-grid tr[data-i="${i}"]`); if (!tr) return;
   const nom = (id) => (c.proveedores.find(p => String(p.id) === String(id)) || {}).nombre || '';
@@ -1267,6 +1303,7 @@ function pintarFila(i){
   mot.style.borderColor = pideMotivo && !String(l.motivo||'').trim() ? 'var(--warn)' : '';
 }
 function pintarSum(){
+  congelar();
   const t = totales(), c = E().c;
   $('#e-sum').innerHTML = `
     <div class="kpi"><span class="l">Claves</span><span class="v">${t.n}</span></div>
