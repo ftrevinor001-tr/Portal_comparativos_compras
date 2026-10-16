@@ -35,6 +35,7 @@
   --best:#163323; --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.25); color-scheme:dark }
 
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.45 var(--f-body);-webkit-font-smoothing:antialiased}
 h1,h2,h3{font-family:var(--f-display);font-weight:600;letter-spacing:.005em;margin:0;text-wrap:balance}
@@ -233,6 +234,7 @@ function makeSupabaseApi(){
   return {
     usuarios: async () => ok(await sb.from('cmp_usuarios').select('*').order('nombre')),
     verificarPin: async (id, pin) => ok(await sb.rpc('cmp_verificar_pin', {p_usuario_id:id, p_pin:pin})),
+    usuariosConPin: async () => { const r = await sb.rpc('cmp_usuarios_con_pin'); if (r.error) return null; return (r.data || []).map(x => +(typeof x === 'object' ? Object.values(x)[0] : x)); },
     cambiarPin: async (id, actual, nuevo) => ok(await sb.rpc('cmp_cambiar_pin', {p_usuario_id:id, p_pin_actual:actual, p_pin_nuevo:nuevo})),
     registrarAcceso: async (u) => { await sb.from('cmp_accesos').insert({usuario:u.nombre, rol:u.rol, navegador:navigator.userAgent.slice(0,180)}); },
     accesos: async () => ok(await sb.from('cmp_accesos').select('*').order('fecha',{ascending:false}).limit(500)),
@@ -352,8 +354,9 @@ function makeDemoApi(){
   return {
     reset: () => { try{ localStorage.removeItem(KEY); }catch(e){} location.reload(); },
     usuarios: async () => wait([...db.usuarios].sort((a,b)=>a.nombre.localeCompare(b.nombre))),
-    verificarPin: async (id, pin) => { try { valida(id, pin, ['APROBADOR','ADMIN']); return wait(true); } catch(e) { return wait(false); } },
-    cambiarPin: async (id, actual, nuevo) => { const u = valida(id, actual, ['APROBADOR','ADMIN']); if (String(nuevo||'').length < 4) throw new Error('El PIN debe tener al menos 4 dígitos'); db.pins[id] = String(nuevo); bit(u.nombre,'CAMBIO DE PIN','usuario',id); save(); return wait(true); },
+    verificarPin: async (id, pin) => { try { valida(id, pin, ['COMPRADOR','APROBADOR','ADMIN']); return wait(true); } catch(e) { return wait(false); } },
+    usuariosConPin: async () => wait(Object.keys(db.pins).map(Number)),
+    cambiarPin: async (id, actual, nuevo) => { const u = valida(id, actual, ['COMPRADOR','APROBADOR','ADMIN']); if (String(nuevo||'').length < 4) throw new Error('El PIN debe tener al menos 4 dígitos'); db.pins[id] = String(nuevo); bit(u.nombre,'CAMBIO DE PIN','usuario',id); save(); return wait(true); },
     registrarAcceso: async (u) => { db.accesos.unshift({id:nextId('accesos'), fecha:now(), usuario:u.nombre, rol:u.rol, navegador:navigator.userAgent.slice(0,180)}); save(); },
     accesos: async () => wait(db.accesos.slice(0,500)),
     bitacora: async () => wait(db.bitacora.slice(0,500)),
@@ -792,10 +795,19 @@ function shell(){
     <div class="top"><div class="top-in">
       <div class="brand"><svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><rect x="2" y="12" width="5" height="12" rx="1" fill="var(--line-2)"/><rect x="10.5" y="5" width="5" height="19" rx="1" fill="var(--accent)"/><rect x="19" y="9" width="5" height="15" rx="1" fill="var(--line-2)"/></svg>Comparativos de Compra</div>
       <nav class="nav" id="nav">${VIEWS.filter(v => v[0] !== 'admin' || isAprob()).map(v => `<button data-v="${v[0]}">${v[1]}</button>`).join('')}</nav>
-      <div class="who"><span><b>${esc(S.user.nombre)}</b> <span class="muted rol">· ${esc(S.user.puesto || (S.user.rol === 'COMPRADOR' ? 'Comprador' : S.user.rol))}</span></span><button class="btn sm" id="salir">Salir</button></div>
+      <div class="who"><span><b>${esc(S.user.nombre)}</b> <span class="muted rol">· ${esc(S.user.puesto || (S.user.rol === 'COMPRADOR' ? 'Comprador' : S.user.rol))}</span></span><button class="btn sm ghost" id="mipin" title="Cambiar mi PIN">Mi PIN</button><button class="btn sm" id="salir">Salir</button></div>
     </div></div>
     <main id="main"></main>`;
   $$('#nav button').forEach(b => b.onclick = () => go(b.dataset.v));
+  $('#mipin').onclick = () => {
+    const m = modal({title:'Cambiar mi PIN', body:`
+      <div class="field"><label for="mp1">PIN actual</label><input id="mp1" type="password" inputmode="numeric" autocomplete="off"></div>
+      <div class="field"><label for="mp2">PIN nuevo (mínimo 4 dígitos)</label><input id="mp2" type="password" inputmode="numeric" autocomplete="new-password"></div>
+      <div class="field"><label for="mp3">Repite el PIN nuevo</label><input id="mp3" type="password" inputmode="numeric" autocomplete="new-password"></div><div class="err-msg"></div>`,
+      actions:[{label:'Cancelar'}, {label:'Cambiar PIN', cls:'pri', onClick: async (el) => {
+        if ($('#mp2', el).value !== $('#mp3', el).value) throw new Error('El PIN nuevo no coincide');
+        await API.cambiarPin(S.user.id, $('#mp1', el).value, $('#mp2', el).value); toast('PIN actualizado'); }}]});
+  };
   $('#salir').onclick = async () => { if (await salirOk()) { store.del('cmp_user'); S.user = null; S.dirty = false; login(); } };
   if (DEMO) $('#demo-reset').onclick = async () => { if (await confirmar('Reiniciar ejemplo', 'Se borran los cambios hechos en este navegador y se cargan otra vez los datos de ejemplo.', 'Reiniciar', 'bad')) API.reset(); };
 }
@@ -832,26 +844,29 @@ async function login(){
     <main><div class="login">
       <div class="brand" style="justify-content:center;font-size:1.5rem"><svg width="30" height="30" viewBox="0 0 26 26" aria-hidden="true"><rect x="2" y="12" width="5" height="12" rx="1" fill="var(--line-2)"/><rect x="10.5" y="5" width="5" height="19" rx="1" fill="var(--accent)"/><rect x="19" y="9" width="5" height="15" rx="1" fill="var(--line-2)"/></svg>Comparativos de Compra</div>
       <form class="panel" id="lf">
-        <div><h2>Entrar</h2><p class="muted small" style="margin:4px 0 0">Elige tu nombre. Jefe de Compras, Jefe de Costos y Gerente de Compras entran con su PIN.</p></div>
+        <div><h2>Entrar</h2><p class="muted small" style="margin:4px 0 0">Elige tu nombre. Escribe tu PIN si tienes uno asignado.</p></div>
         <div class="field"><label for="lu">Nombre</label><select id="lu"><option value="">Cargando…</option></select></div>
         <div class="field" id="lpin-f" hidden><label for="lpin">PIN</label><input id="lpin" type="password" inputmode="numeric" autocomplete="off"></div>
         <div class="err-msg" id="lerr"></div>
         <button class="btn pri" type="submit">Entrar</button>
       </form>
     </div></main>`;
-  let us = [];
-  try { us = (await API.usuarios()).filter(u => u.activo); }
+  let us = [], conPin = null;
+  try { const [lista, cp] = await Promise.all([API.usuarios(), API.usuariosConPin().catch(() => null)]); us = lista.filter(u => u.activo); conPin = cp; }
   catch(e) { $('#lerr').textContent = 'No se pudo conectar a la base de datos: ' + errMsg(e); return; }
   const ap = us.filter(u => u.rol !== 'COMPRADOR'), co = us.filter(u => u.rol === 'COMPRADOR');
   $('#lu').innerHTML = `<option value="">Selecciona…</option>
     <optgroup label="Aprobadores">${ap.map(u => `<option value="${u.id}">${esc(u.nombre)}${u.puesto ? ' · ' + esc(u.puesto) : ''}</option>`).join('')}</optgroup>
     <optgroup label="Compradores">${co.map(u => `<option value="${u.id}">${esc(u.nombre)}</option>`).join('')}</optgroup>`;
   const sel = () => us.find(u => u.id === +$('#lu').value);
-  $('#lu').onchange = () => { const u = sel(); $('#lpin-f').hidden = !u || u.rol === 'COMPRADOR'; if (!$('#lpin-f').hidden) $('#lpin').focus(); };
+  // pide PIN a aprobadores y a cualquier usuario que tenga PIN asignado
+  const pidePin = (u) => u.rol !== 'COMPRADOR' || (conPin !== null && conPin.includes(u.id));
+  $('#lu').onchange = () => { const u = sel(); $('#lpin-f').hidden = !u || !pidePin(u); $('#lpin').value = ''; if (!$('#lpin-f').hidden) $('#lpin').focus(); };
   $('#lf').onsubmit = async (e) => {
     e.preventDefault(); const u = sel(); $('#lerr').textContent = '';
     if (!u) { $('#lerr').textContent = 'Elige tu nombre'; return; }
-    if (u.rol !== 'COMPRADOR') {
+    if (pidePin(u)) {
+      if (!$('#lpin').value) { $('#lerr').textContent = 'Escribe tu PIN'; return; }
       const ok = await API.verificarPin(u.id, $('#lpin').value);
       if (!ok) { $('#lerr').textContent = 'PIN incorrecto'; return; }
     }
@@ -2252,9 +2267,10 @@ async function vAdmin(main){
 }
 async function admUsuarios(ab){
   S.usuarios = await API.usuarios();
+  let conPin = null; try { conPin = await API.usuariosConPin(); } catch(e) {}
   ab.innerHTML = `<div class="row" style="margin-bottom:10px"><span class="muted small">${isAdmin() ? 'Los compradores se dan de alta solos al cargar el catálogo. Solo el administrador cambia roles y PIN.' : 'Solo el administrador puede modificar usuarios.'}</span><span class="spacer"></span>${isAdmin() ? '<button class="btn pri" id="un">Nuevo usuario</button>' : ''}</div>
-    <div class="tbl-wrap"><table><thead><tr><th>Nombre</th><th>Rol</th><th>Puesto</th><th>Estado</th></tr></thead><tbody>
-    ${S.usuarios.sort((a,b) => (a.rol === 'COMPRADOR') - (b.rol === 'COMPRADOR') || a.nombre.localeCompare(b.nombre)).map(u => `<tr class="${isAdmin() ? 'click' : ''}" data-u="${u.id}"><td>${esc(u.nombre)}</td><td>${esc(u.rol)}</td><td class="small">${esc(u.puesto || '')}</td><td>${u.activo ? '<span class="pill APROBADO">Activo</span>' : '<span class="pill CANCELADO">Inactivo</span>'}</td></tr>`).join('')}
+    <div class="tbl-wrap"><table><thead><tr><th>Nombre</th><th>Rol</th><th>Puesto</th><th>PIN</th><th>Estado</th></tr></thead><tbody>
+    ${S.usuarios.sort((a,b) => (a.rol === 'COMPRADOR') - (b.rol === 'COMPRADOR') || a.nombre.localeCompare(b.nombre)).map(u => `<tr class="${isAdmin() ? 'click' : ''}" data-u="${u.id}"><td>${esc(u.nombre)}</td><td>${esc(u.rol)}</td><td class="small">${esc(u.puesto || '')}</td><td class="small">${conPin === null ? '—' : conPin.includes(u.id) ? 'Asignado' : '<span class="up">Sin PIN</span>'}</td><td>${u.activo ? '<span class="pill APROBADO">Activo</span>' : '<span class="pill CANCELADO">Inactivo</span>'}</td></tr>`).join('')}
     </tbody></table></div>`;
   if (!isAdmin()) return;
   const editar = (u) => { const n = !u; u = u || {rol:'COMPRADOR', activo:true};
@@ -2262,7 +2278,7 @@ async function admUsuarios(ab){
       <div class="field"><label for="uu-n">Nombre</label><input id="uu-n" type="text" value="${esc(u.nombre || '')}"></div>
       <div class="grid" style="grid-template-columns:1fr 1fr"><div class="field"><label for="uu-r">Rol</label><select id="uu-r">${['COMPRADOR','APROBADOR','ADMIN'].map(r => `<option ${u.rol === r ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
       <div class="field"><label for="uu-p">Puesto</label><input id="uu-p" type="text" value="${esc(u.puesto || '')}" placeholder="Jefe de Costos"></div></div>
-      <div class="field"><label for="uu-pin">${n ? 'PIN (para aprobadores)' : 'PIN nuevo (déjalo vacío para no cambiarlo)'}</label><input id="uu-pin" type="password" inputmode="numeric" autocomplete="new-password"></div>
+      <div class="field"><label for="uu-pin">${n ? 'PIN (con PIN asignado, el usuario debe escribirlo para entrar)' : 'PIN nuevo (déjalo vacío para no cambiarlo)'}</label><input id="uu-pin" type="password" inputmode="numeric" autocomplete="new-password"></div>
       <label class="row small" style="gap:8px"><input id="uu-a" type="checkbox" ${u.activo !== false ? 'checked' : ''}> Activo</label>
       <hr style="border:0;border-top:1px solid var(--line);width:100%">
       <div class="field"><label for="uu-adm">Tu PIN de administrador</label><input id="uu-adm" type="password" inputmode="numeric" autocomplete="off"></div><div class="err-msg"></div>`,
