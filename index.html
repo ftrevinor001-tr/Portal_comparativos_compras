@@ -322,7 +322,7 @@ function makeSupabaseApi(){
 
 /* ---------------- DEMOSTRACIÓN (localStorage) ---------------- */
 function makeDemoApi(){
-  const KEY = 'comparativos_demo_v6';
+  const KEY = 'comparativos_demo_v7';
   let db = null;
   try { db = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(e) {}
   if (!db) db = buildDemoSeed();
@@ -493,13 +493,13 @@ function makeDemoApi(){
         if (clave === null) { const r = db.relaciones.find(r => r.proveedor_id === l.proveedor_id && r.clave_proveedor === cp) || db.precios.find(p => p.proveedor_id === l.proveedor_id && p.clave_proveedor === cp && p.clave != null); if (r) clave = r.clave; }
         db.precios.push({id:nextId('precios'), lista_id:l.id, proveedor_id:l.proveedor_id, clave, clave_proveedor:cp, descripcion:f.descripcion || null, unidad:f.unidad || null, contenido:f.contenido ?? null,
           precio_lista:f.precio_lista ?? null, descuentos:f.descuentos || null, precio_neto:neto, moneda:l.moneda, minimo_compra:f.minimo_compra ?? null, tiempo_entrega:f.tiempo_entrega ?? null,
-          vigencia_desde:l.vigencia_desde, vigencia_hasta:f.vigencia_hasta || l.vigencia_hasta, notas:f.notas || null, creado_en:now()});
+          vigencia_desde:f.vigencia_desde || l.vigencia_desde, vigencia_hasta:f.vigencia_hasta || l.vigencia_hasta, notas:f.notas || null, creado_en:now()});
         l.filas++;
         if (clave === null) l.sin_clave++;
         else { let r = db.relaciones.find(x => x.clave === clave && x.proveedor_id === l.proveedor_id);
           if (!r) { r = {clave, proveedor_id:l.proveedor_id, tipo:'COTIZADO', fuente:'LISTA'}; db.relaciones.push(r); }
           if (r.tipo === 'SIMILAR') r.tipo = 'COTIZADO';
-          if (!r.ultima_fecha || l.vigencia_desde >= r.ultima_fecha) { r.ultima_fecha = l.vigencia_desde; r.ultimo_precio = neto; }
+          const fd = f.vigencia_desde || l.vigencia_desde; if (!r.ultima_fecha || fd >= r.ultima_fecha) { r.ultima_fecha = fd; r.ultimo_precio = neto; }
           if (!r.clave_proveedor && cp) r.clave_proveedor = cp; }
       }
       bit(usuario, 'CARGÓ LISTA DE PRECIOS', 'lista', l.id, {proveedor:pv && pv.nombre, vigencia:l.vigencia_desde, archivo:l.archivo});
@@ -1761,12 +1761,19 @@ async function descargarPlantillaPrecios(p){
 }
 
 /* ---------- Carga de un Excel de precios ---------- */
-const CAMPOS_PRECIO = [['','Ignorar'],['clave','Clave Masferre (nuestra)'],['clave_proveedor','Clave del proveedor'],['descripcion','Descripción del proveedor'],['unidad','Unidad'],['contenido','Piezas por empaque'],
+const CAMPOS_PRECIO = [['','Ignorar'],['proveedor','Proveedor (nombre) — varios proveedores'],['id_proveedor','ID del proveedor (sistema) — varios proveedores'],['fecha','Fecha del precio (ej. última compra)'],
+  ['importe','Importe total (precio = importe ÷ cantidad)'],['cantidad','Cantidad (precio = importe ÷ cantidad)'],['clave','Clave Masferre (nuestra)'],['clave_proveedor','Clave del proveedor'],['descripcion','Descripción del proveedor'],['unidad','Unidad'],['contenido','Piezas por empaque'],
   ['precio_lista','Precio de lista'],['descuentos','Descuentos (%)'],['precio_neto','Precio neto'],['minimo_compra','Mínimo de compra'],['tiempo_entrega','Tiempo de entrega (días)'],['vigencia_hasta','Vigencia hasta'],['notas','Observaciones']];
 function adivinaPrecio(h){
   const n = normH(h);
   if (!n || n.startsWith('ultimoprecio') || n === 'descripcionmasferre') return '';
   if (/masferre|sanver|nuestra|interna|clavemf/.test(n)) return 'clave';
+  if (['idproveedor','idprov','numproveedor','noproveedor','cveproveedor'].includes(n)) return 'id_proveedor';
+  if (n === 'proveedor' || n === 'nombreproveedor' || n.startsWith('razonsocial')) return 'proveedor';
+  if (n.startsWith('importe') || n === 'total' || n === 'subtotal') return 'importe';
+  if (n.startsWith('cantidad') || n === 'cant' || n === 'unidadesrecibidas') return 'cantidad';
+  if (n.startsWith('ultimacompra') || n.startsWith('fecha')) return 'fecha';
+  if (n === 'rank' || n.startsWith('primeracompra') || n.startsWith('partimporte') || n.includes('recepciones')) return '';
   if (n.includes('neto')) return 'precio_neto';
   if (n.startsWith('desc') && !n.startsWith('descrip')) return 'descuentos';
   if (n.startsWith('descrip')) return 'descripcion';
@@ -1784,18 +1791,21 @@ function cargarListaPrecios(prov){
   const m = modal({title:'Cargar lista de precios', wide:true, body:`
     <datalist id="lp-dl">${S.proveedores.map(p => `<option value="${esc(p.nombre)}">`).join('')}</datalist>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
-      <div class="field" style="grid-column:span 2"><label for="lp-p">Proveedor</label><input id="lp-p" type="text" list="lp-dl" value="${esc(prov ? prov.nombre : '')}" placeholder="Escribe para buscar"></div>
+      <div class="field" style="grid-column:span 2"><label for="lp-p">Proveedor</label><input id="lp-p" type="text" list="lp-dl" value="${esc(prov ? prov.nombre : '')}" placeholder="Vacío si el archivo trae varios proveedores"></div>
       <div class="field"><label for="lp-d">Vigente desde</label><input id="lp-d" type="date" value="${hoyISO()}"></div>
       <div class="field"><label for="lp-h">Vigente hasta (opcional)</label><input id="lp-h" type="date"></div>
       <div class="field"><label for="lp-per">Periodicidad del proveedor</label><select id="lp-per"><option value="">—</option>${PERIODOS.map(([k]) => `<option ${prov && prov.periodicidad_precios === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
       <div class="field"><label for="lp-mon">Moneda</label><select id="lp-mon"><option>MXN</option><option>USD</option></select></div>
     </div>
     <label class="row small" style="gap:8px"><input id="lp-iva" type="checkbox"> Los precios del archivo incluyen IVA (se guardan sin IVA, divididos entre 1.16)</label>
+    <div class="note small" style="margin:0"><b>Carga inicial de varios proveedores:</b> si el archivo trae una columna de proveedor (nombre o ID del sistema), deja vacío el proveedor de arriba y se crea una lista por proveedor. Si trae la fecha de cada precio (ej. última compra) se usa como vigencia. Si trae importe y cantidad en lugar de precio, se calcula importe ÷ cantidad.</div>
+    <label class="row small" style="gap:8px"><input id="lp-ult" type="checkbox" checked> Si una clave y proveedor se repiten, guardar solo el precio más reciente</label>
     <div class="field"><label for="lp-n">Notas</label><input id="lp-n" type="text" placeholder="Ej. aumento 4% por acero; flete incluido a partir de 5,000"></div>
     <div class="row"><input id="lp-f" type="file" accept=".xlsx,.xls,.csv"><select id="lp-h2" style="width:200px" hidden></select></div>
     <div id="lp-map"></div><div class="err-msg"></div>`,
     actions:[{label:'Cancelar'}, {label:'Cargar lista', cls:'pri', onClick: async (el) => subirLista(el)}]});
   const el = m.el; let wb = null;
+  $('#lp-d', el).onchange = () => { $('#lp-d', el).dataset.tocado = '1'; };
   $('#lp-p', el).onchange = () => { const p = S.proveedores.find(x => x.nombre === $('#lp-p', el).value.trim().toUpperCase()); if (p && p.periodicidad_precios) $('#lp-per', el).value = p.periodicidad_precios; };
   $('#lp-f', el).onchange = async (e) => { const f = e.target.files[0]; if (!f) return; $('.err-msg', el).textContent = '';
     try { wb = await leerExcel(f); } catch(err) { $('.err-msg', el).textContent = errMsg(err); return; }
@@ -1807,6 +1817,9 @@ function cargarListaPrecios(prov){
     const hr = Math.max(0, aoa.findIndex(r => (r||[]).filter(v => v !== null && v !== '').length >= 3));
     const head = aoa[hr] || [], data = aoa.slice(hr + 1);
     const cols = head.map((h, j) => ({j, h, campo:adivinaPrecio(h), muestra:data.slice(0, 3).map(r => (r||[])[j]).filter(v => v !== null)})).filter(c => c.h !== null || c.muestra.length);
+    // "CLAVE" a secas es nuestra clave cuando el archivo trae proveedor (reporte interno) o ya trae otra columna de clave del proveedor
+    const simples = cols.filter(c => ['clave','cve','articulo','id'].includes(normH(c.h)) && c.campo === 'clave_proveedor');
+    if (!cols.some(c => c.campo === 'clave') && simples.length && (cols.some(c => ['proveedor','id_proveedor'].includes(c.campo)) || cols.filter(c => c.campo === 'clave_proveedor').length > 1)) simples[0].campo = 'clave';
     el._precio = {data, cols};
     $('#lp-map', el).innerHTML = `<p class="small muted" style="margin:0">${data.length.toLocaleString('es-MX')} filas. Revisa qué es cada columna; con la plantilla del portal se reconocen solas.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Col.</th><th>Encabezado</th><th>Ejemplo</th><th>Es…</th></tr></thead><tbody>
@@ -1823,6 +1836,7 @@ function filasDePrecios(data, cols, conIva){
   data.forEach(r => {
     const clave = String(val(r, 'clave') ?? '').trim(), cp = val(r, 'clave_proveedor') == null ? '' : String(val(r, 'clave_proveedor')).trim();
     let lista = aNum(val(r, 'precio_lista')), neto = aNum(val(r, 'precio_neto'));
+    if (lista == null && neto == null && col('importe') && col('cantidad')) { const im = aNum(val(r, 'importe')), ca = aNum(val(r, 'cantidad')); if (im != null && ca) lista = im / ca; }
     if ((!/^\d+$/.test(clave) && !cp) || (lista == null && neto == null)) return;
     let d = val(r, 'descuentos'), desc = null;
     if (d != null && d !== '') { if (typeof d === 'number') desc = String(d > 0 && d < 1 ? Math.round(d * 10000) / 100 : d); else desc = String(d).replace(/%/g, '').replace(/\s*,\s*/g, '+').trim(); if (desc === '0') desc = null; }
@@ -1830,19 +1844,22 @@ function filasDePrecios(data, cols, conIva){
     if (neto == null) neto = netoDe(lista, desc, '');
     filas.push({clave:/^\d+$/.test(clave) ? clave : null, clave_proveedor:cp || null, descripcion:val(r, 'descripcion') ? String(val(r, 'descripcion')).trim() : null,
       unidad:val(r, 'unidad') ? String(val(r, 'unidad')).trim() : null, contenido:aNum(val(r, 'contenido')), precio_lista:r4(lista), descuentos:desc, precio_neto:r4(neto),
-      minimo_compra:aNum(val(r, 'minimo_compra')), tiempo_entrega:aNum(val(r, 'tiempo_entrega')), vigencia_hasta:aFecha(val(r, 'vigencia_hasta')), notas:val(r, 'notas') ? String(val(r, 'notas')).trim() : null});
+      minimo_compra:aNum(val(r, 'minimo_compra')), tiempo_entrega:aNum(val(r, 'tiempo_entrega')), vigencia_hasta:aFecha(val(r, 'vigencia_hasta')), notas:val(r, 'notas') ? String(val(r, 'notas')).trim() : null,
+      vigencia_desde:aFecha(val(r, 'fecha')), proveedor:val(r, 'proveedor') != null ? String(val(r, 'proveedor')).trim().toUpperCase() : null,
+      id_proveedor:/^\d+$/.test(String(val(r, 'id_proveedor') ?? '').trim()) ? +val(r, 'id_proveedor') : null});
   });
   return filas;
 }
 async function subirLista(el){
-  const p = S.proveedores.find(x => x.nombre === $('#lp-p', el).value.trim().toUpperCase());
-  if (!p) throw new Error('Elige un proveedor de la lista (si no existe, dalo de alta en Proveedores)');
   if (!el._precio) throw new Error('Elige el archivo de Excel');
   const cols = el._precio.cols;
+  const multi = cols.some(c => c.campo === 'proveedor' || c.campo === 'id_proveedor');
+  if (multi) return subirListaMulti(el, cols);
+  const p = S.proveedores.find(x => x.nombre === $('#lp-p', el).value.trim().toUpperCase());
+  if (!p) throw new Error('Elige un proveedor de la lista (si no existe, dalo de alta en Proveedores), o indica la columna de proveedor del archivo');
   if (!cols.some(c => c.campo === 'clave') && !cols.some(c => c.campo === 'clave_proveedor')) throw new Error('Indica la columna de nuestra clave o la de la clave del proveedor');
-  if (!cols.some(c => c.campo === 'precio_lista') && !cols.some(c => c.campo === 'precio_neto')) throw new Error('Indica la columna del precio');
-  const usados = cols.filter(c => c.campo); if (new Set(usados.map(c => c.campo)).size !== usados.length) throw new Error('Hay dos columnas asignadas al mismo campo');
-  const filas = filasDePrecios(el._precio.data, cols, $('#lp-iva', el).checked);
+  validarColsPrecio(cols);
+  const filas = soloRecientes(filasDePrecios(el._precio.data, cols, $('#lp-iva', el).checked), $('#lp-ult', el).checked);
   if (!filas.length) throw new Error('No encontré renglones con clave y precio');
   const lista = {proveedor_id:p.id, archivo:el._archivo, vigencia_desde:$('#lp-d', el).value || hoyISO(), vigencia_hasta:$('#lp-h', el).value || null,
     periodicidad:$('#lp-per', el).value || null, moneda:$('#lp-mon', el).value, notas:$('#lp-n', el).value.trim() || null};
@@ -1852,6 +1869,51 @@ async function subirLista(el){
   await refrescarProveedores();
   if (S.view === 'precios') go('precios');
   if (r.sin_clave) { const ls = await API.listasPrecio(); const l = ls.find(x => x.id === r.lista_id); if (l) setTimeout(() => detalleLista(l), 300); }
+}
+
+function validarColsPrecio(cols){
+  if (!cols.some(c => c.campo === 'clave') && !cols.some(c => c.campo === 'clave_proveedor')) throw new Error('Indica la columna de nuestra clave o la de la clave del proveedor');
+  if (!cols.some(c => ['precio_lista','precio_neto'].includes(c.campo)) && !(cols.some(c => c.campo === 'importe') && cols.some(c => c.campo === 'cantidad'))) throw new Error('Indica la columna del precio (o la de importe y la de cantidad)');
+  const usados = cols.filter(c => c.campo); if (new Set(usados.map(c => c.campo)).size !== usados.length) throw new Error('Hay dos columnas asignadas al mismo campo');
+}
+/* Si clave + proveedor se repiten (ej. varias compras), deja solo el precio con la fecha más reciente */
+function soloRecientes(filas, activo){
+  if (!activo) return filas;
+  const m = new Map();
+  filas.forEach(f => { const k = (f.clave || 'p:' + f.clave_proveedor) + '|' + (f.id_proveedor ?? f.proveedor ?? ''), x = m.get(k);
+    if (!x || (f.vigencia_desde || '') >= (x.vigencia_desde || '')) m.set(k, f); });
+  return [...m.values()];
+}
+/* Carga con columna de proveedor: una lista por proveedor */
+async function subirListaMulti(el, cols){
+  validarColsPrecio(cols);
+  const filas = soloRecientes(filasDePrecios(el._precio.data, cols, $('#lp-iva', el).checked), $('#lp-ult', el).checked);
+  if (!filas.length) throw new Error('No encontré renglones con clave, proveedor y precio');
+  const grupos = new Map();
+  filas.forEach(f => { const k = f.id_proveedor != null ? 'id' + f.id_proveedor : 'n' + (f.proveedor || ''); if (k === 'n') return;
+    if (!grupos.has(k)) grupos.set(k, {id_sistema:f.id_proveedor, nombre:f.proveedor, filas:[]}); grupos.get(k).filas.push(f); });
+  if (!grupos.size) throw new Error('Los renglones no traen proveedor');
+  const buscar = (g) => (g.id_sistema != null && S.proveedores.find(p => p.id_sistema === g.id_sistema)) || (g.nombre && S.proveedores.find(p => p.nombre === g.nombre));
+  const faltan = [...grupos.values()].filter(g => !buscar(g));
+  if (!(await confirmar('Carga de varios proveedores', `Se crearán <b>${grupos.size}</b> listas de precios (una por proveedor) con <b>${filas.length.toLocaleString('es-MX')}</b> precios.${faltan.length ? `<br><br><b>${faltan.length}</b> proveedor(es) no existen en el portal y se darán de alta en evaluación: ${faltan.slice(0, 8).map(g => esc(g.nombre || 'ID ' + g.id_sistema)).join(', ')}${faltan.length > 8 ? '…' : ''}` : ''}`, 'Cargar'))) return false;
+  const btn = $('[data-a="1"]', el);
+  for (const g of faltan) { await API.guardarProveedor({nombre:g.nombre || 'PROVEEDOR ' + g.id_sistema, id_sistema:g.id_sistema}, S.user.nombre); }
+  if (faltan.length) await refrescarProveedores();
+  const base = {archivo:el._archivo, vigencia_desde:$('#lp-d', el).value || hoyISO(), vigencia_hasta:$('#lp-h', el).value || null,
+    periodicidad:$('#lp-per', el).value || null, moneda:$('#lp-mon', el).value, notas:$('#lp-n', el).value.trim() || null};
+  let i = 0, total = 0, sin = 0; const errores = [];
+  for (const g of grupos.values()) {
+    i++; btn.textContent = `Cargando proveedor ${i} de ${grupos.size}…`;
+    const p = buscar(g); if (!p) { errores.push(g.nombre || g.id_sistema); continue; }
+    const fechas = g.filas.map(f => f.vigencia_desde).filter(Boolean).sort();
+    try { const r = await API.cargarPrecios(S.user.nombre, {...base, proveedor_id:p.id, vigencia_desde:fechas.length && !$('#lp-d', el).dataset.tocado ? fechas[fechas.length - 1] : base.vigencia_desde}, g.filas);
+      total += r.filas; sin += r.sin_clave; }
+    catch(e) { errores.push(`${p.nombre}: ${errMsg(e)}`); }
+  }
+  API.log(S.user.nombre, 'CARGA DE PRECIOS DE VARIOS PROVEEDORES', 'lista', '', {proveedores:grupos.size, precios:total, sin_clave:sin, archivo:el._archivo});
+  toast(`${total.toLocaleString('es-MX')} precios cargados en ${grupos.size - errores.length} listas${sin ? ` · ${sin} sin clave Masferre` : ''}${errores.length ? ` · ${errores.length} con error` : ''}`, !!errores.length);
+  if (errores.length) console.warn('Errores de carga', errores);
+  await refrescarProveedores(); if (S.view === 'precios') go('precios');
 }
 
 /* ---------- Detalle de una carga ---------- */
