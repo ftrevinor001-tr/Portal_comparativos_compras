@@ -150,6 +150,8 @@ th.num{font-family:var(--f-display);font-size:.8rem}
 .tag-rel{font-family:var(--f-body);font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
 .tag-rel.comp{color:var(--ok)}
 .tag-rel.sim{color:var(--info)}
+.tag-lista{font-family:var(--f-body);font-size:.68rem;font-weight:600;color:var(--accent);white-space:nowrap}
+.tag-lista.venc{color:var(--warn)}
 .tag-bq{font-family:var(--f-body);font-size:.7rem;font-weight:600;color:var(--bad);text-transform:uppercase;letter-spacing:.03em}
 .cmp-grid td.entrega{font-weight:600;font-size:.74rem;text-align:center;border-left:2px solid var(--line-2);color:var(--fg)}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
@@ -282,7 +284,23 @@ function makeSupabaseApi(){
     rechazar: async (id, uid, pin, comentario) => ok(await sb.rpc('cmp_rechazar', {p_id:id, p_usuario_id:uid, p_pin:pin, p_comentario:comentario})),
     guardarUsuario: async (adminId, adminPin, u) => ok(await sb.rpc('cmp_guardar_usuario', {p_admin_id:adminId, p_admin_pin:adminPin, p_id:u.id||null, p_nombre:u.nombre, p_rol:u.rol, p_puesto:u.puesto||null, p_activo:u.activo!==false, p_pin_nuevo:u.pin||null})),
     relaciones: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves.map(Number))], 200)) out = out.concat(ok(await sb.from('cmp_clave_proveedor').select('*').in('clave', c))); return out; },
-    relacionesProveedor: async (provId) => all(() => sb.from('cmp_clave_proveedor').select('clave,tipo,ultima_fecha,ultimo_precio').eq('proveedor_id', provId).order('clave')),
+    relacionesProveedor: async (provId) => all(() => sb.from('cmp_clave_proveedor').select('*').eq('proveedor_id', provId).order('clave')),
+    /* listas de precios */
+    listasPrecio: async () => ok(await sb.from('cmp_listas_precio').select('*').order('cargado_en', {ascending:false}).limit(1000)),
+    preciosDeLista: async (id) => all(() => sb.from('cmp_precios').select('*').eq('lista_id', id).order('id')),
+    preciosVigentes: async (claves) => { let out=[]; for (const c of chunk([...new Set(claves.map(Number))], 200)) out = out.concat(ok(await sb.from('cmp_precios_vigentes').select('*').in('clave', c))); return out; },
+    preciosVigentesProveedor: async (provId) => all(() => sb.from('cmp_precios_vigentes').select('*').eq('proveedor_id', provId).order('clave')),
+    historialPrecios: async (clave) => ok(await sb.from('cmp_precios_hist').select('*').eq('clave', clave).order('vigencia_desde', {ascending:false}).order('id', {ascending:false}).limit(300)),
+    cargarPrecios: async (usuario, lista, filas, progreso) => {
+      const partes = chunk(filas, 500); let id = null, n = 0, s = 0;
+      for (let i=0;i<partes.length;i++){
+        const r = ok(await sb.rpc('cmp_cargar_precios', {p_usuario:usuario, p_lista:lista, p_filas:partes[i], p_lista_id:id}));
+        id = r.lista_id; n += r.filas; s += r.sin_clave; progreso && progreso(i+1, partes.length);
+      }
+      return {lista_id:id, filas:n, sin_clave:s};
+    },
+    anularLista: async (id, uid, pin, motivo) => ok(await sb.rpc('cmp_anular_lista', {p_id:id, p_usuario_id:uid, p_pin:pin, p_motivo:motivo})),
+    asignarClavePrecio: async (usuario, provId, claveProv, clave) => ok(await sb.rpc('cmp_asignar_clave_precio', {p_usuario:usuario, p_proveedor_id:provId, p_clave_proveedor:claveProv, p_clave:clave})),
     bloqueos: async () => all(() => sb.from('cmp_bloqueos').select('*').eq('activo', true).order('bloqueado_en', {ascending:false})),
     bloquear: async (provId, clave, motivo, uid, pin) => ok(await sb.rpc('cmp_bloquear', {p_prov:provId, p_clave:clave ?? null, p_motivo:motivo, p_usuario_id:uid, p_pin:pin})),
     desbloquear: async (id, uid, pin) => ok(await sb.rpc('cmp_desbloquear', {p_id:id, p_usuario_id:uid, p_pin:pin})),
@@ -304,7 +322,7 @@ function makeSupabaseApi(){
 
 /* ---------------- DEMOSTRACIÓN (localStorage) ---------------- */
 function makeDemoApi(){
-  const KEY = 'comparativos_demo_v5';
+  const KEY = 'comparativos_demo_v6';
   let db = null;
   try { db = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(e) {}
   if (!db) db = buildDemoSeed();
@@ -325,6 +343,12 @@ function makeDemoApi(){
   const bit = (usuario, accion, entidad, entidad_id, detalle) => db.bitacora.unshift({id:nextId('bitacora'), fecha:now(), usuario, accion, entidad, entidad_id:String(entidad_id??''), detalle});
   const clavesDe = (lineas) => [...new Set(lineas.map(l => +l.clave).filter(Boolean))];
   const LIST = c => { const x = {...c}; delete x.lineas; return x; };
+  const histDemo = () => { const act = new Set(db.listas.filter(l => l.activa).map(l => l.id)); const L = new Map(db.listas.map(l => [l.id, l]));
+    return db.precios.filter(p => act.has(p.lista_id)).map(p => ({...p, archivo:L.get(p.lista_id).archivo, periodicidad:L.get(p.lista_id).periodicidad, cargado_por:L.get(p.lista_id).cargado_por, cargado_en:L.get(p.lista_id).cargado_en})); };
+  const vigentesDemo = () => { const m = new Map();
+    histDemo().filter(p => p.clave != null).forEach(p => { const k = p.clave + '|' + p.proveedor_id, x = m.get(k);
+      if (!x || p.vigencia_desde > x.vigencia_desde || (p.vigencia_desde === x.vigencia_desde && p.id > x.id)) m.set(k, p); });
+    return [...m.values()]; };
   return {
     reset: () => { try{ localStorage.removeItem(KEY); }catch(e){} location.reload(); },
     usuarios: async () => wait([...db.usuarios].sort((a,b)=>a.nombre.localeCompare(b.nombre))),
@@ -451,6 +475,48 @@ function makeDemoApi(){
     relaciones: async (claves) => { const k = new Set(claves.map(Number)); return wait(db.relaciones.filter(r => k.has(r.clave))); },
     relacionesProveedor: async (provId) => wait(db.relaciones.filter(r => r.proveedor_id === provId).sort((a,b) => a.clave - b.clave)),
     bloqueos: async () => wait(db.bloqueos.filter(b => b.activo)),
+    /* listas de precios (demostración) */
+    listasPrecio: async () => wait([...db.listas].sort((a,b) => b.cargado_en.localeCompare(a.cargado_en))),
+    preciosDeLista: async (id) => wait(db.precios.filter(p => p.lista_id === id)),
+    preciosVigentes: async (claves) => { const k = new Set(claves.map(Number)); return wait(vigentesDemo().filter(p => k.has(p.clave))); },
+    preciosVigentesProveedor: async (provId) => wait(vigentesDemo().filter(p => p.proveedor_id === provId)),
+    historialPrecios: async (clave) => wait(histDemo().filter(p => p.clave === +clave).sort((a,b) => b.vigencia_desde.localeCompare(a.vigencia_desde) || b.id - a.id)),
+    cargarPrecios: async (usuario, lista, filas, progreso) => {
+      if (!db.usuarios.some(u => u.nombre === usuario && u.activo)) throw new Error('Usuario no válido');
+      const l = {id:nextId('listas'), proveedor_id:+lista.proveedor_id, archivo:lista.archivo || null, vigencia_desde:lista.vigencia_desde || now().slice(0,10), vigencia_hasta:lista.vigencia_hasta || null,
+        periodicidad:lista.periodicidad || null, moneda:lista.moneda || 'MXN', notas:lista.notas || null, filas:0, sin_clave:0, activa:true, cargado_por:usuario, cargado_en:now()};
+      db.listas.push(l);
+      const pv = db.proveedores.find(p => p.id === l.proveedor_id); if (pv && l.periodicidad) pv.periodicidad_precios = l.periodicidad;
+      for (const f of filas){
+        const cp = f.clave_proveedor ? String(f.clave_proveedor).trim() : null; let clave = /^\d+$/.test(String(f.clave ?? '')) ? +f.clave : null;
+        const neto = f.precio_neto ?? f.precio_lista; if ((clave === null && !cp) || neto == null) continue;
+        if (clave === null) { const r = db.relaciones.find(r => r.proveedor_id === l.proveedor_id && r.clave_proveedor === cp) || db.precios.find(p => p.proveedor_id === l.proveedor_id && p.clave_proveedor === cp && p.clave != null); if (r) clave = r.clave; }
+        db.precios.push({id:nextId('precios'), lista_id:l.id, proveedor_id:l.proveedor_id, clave, clave_proveedor:cp, descripcion:f.descripcion || null, unidad:f.unidad || null, contenido:f.contenido ?? null,
+          precio_lista:f.precio_lista ?? null, descuentos:f.descuentos || null, precio_neto:neto, moneda:l.moneda, minimo_compra:f.minimo_compra ?? null, tiempo_entrega:f.tiempo_entrega ?? null,
+          vigencia_desde:l.vigencia_desde, vigencia_hasta:f.vigencia_hasta || l.vigencia_hasta, notas:f.notas || null, creado_en:now()});
+        l.filas++;
+        if (clave === null) l.sin_clave++;
+        else { let r = db.relaciones.find(x => x.clave === clave && x.proveedor_id === l.proveedor_id);
+          if (!r) { r = {clave, proveedor_id:l.proveedor_id, tipo:'COTIZADO', fuente:'LISTA'}; db.relaciones.push(r); }
+          if (r.tipo === 'SIMILAR') r.tipo = 'COTIZADO';
+          if (!r.ultima_fecha || l.vigencia_desde >= r.ultima_fecha) { r.ultima_fecha = l.vigencia_desde; r.ultimo_precio = neto; }
+          if (!r.clave_proveedor && cp) r.clave_proveedor = cp; }
+      }
+      bit(usuario, 'CARGÓ LISTA DE PRECIOS', 'lista', l.id, {proveedor:pv && pv.nombre, vigencia:l.vigencia_desde, archivo:l.archivo});
+      progreso && progreso(1,1); save(); return wait({lista_id:l.id, filas:l.filas, sin_clave:l.sin_clave});
+    },
+    anularLista: async (id, uid, pin, motivo) => {
+      const u = valida(uid, pin, ['APROBADOR','ADMIN']); if (!String(motivo||'').trim()) throw new Error('Escribe el motivo');
+      const l = db.listas.find(x => x.id === id && x.activa); if (!l) throw new Error('La lista ya no está activa');
+      Object.assign(l, {activa:false, anulada_por:u.nombre, anulada_en:now(), motivo_anulacion:motivo}); bit(u.nombre, 'ANULÓ LISTA DE PRECIOS', 'lista', id, {motivo}); save(); return wait(true);
+    },
+    asignarClavePrecio: async (usuario, provId, claveProv, clave) => {
+      let n = 0; db.precios.forEach(p => { if (p.proveedor_id === provId && p.clave_proveedor === claveProv && p.clave == null) { p.clave = +clave; n++; } });
+      db.listas.filter(l => l.proveedor_id === provId).forEach(l => { l.sin_clave = db.precios.filter(p => p.lista_id === l.id && p.clave == null).length; });
+      let r = db.relaciones.find(x => x.clave === +clave && x.proveedor_id === provId);
+      if (!r) db.relaciones.push({clave:+clave, proveedor_id:provId, tipo:'COTIZADO', clave_proveedor:claveProv, fuente:'LISTA'}); else if (r.tipo === 'SIMILAR') r.tipo = 'COTIZADO';
+      save(); return wait(n);
+    },
     bloquear: async (provId, clave, motivo, uid, pin) => {
       const u = valida(uid, pin, ['APROBADOR','ADMIN']);
       if (!String(motivo||'').trim()) throw new Error('Escribe el motivo del bloqueo');
@@ -508,7 +574,7 @@ function makeDemoApi(){
 function buildDemoSeed(){
   const S = (window.DEMO_SEED || []).filter(r => /PVC HIDRAULICO/.test(r.descripcion));
   const iso = (d) => new Date(d).toISOString();
-  const db = {seq:{}, usuarios:[], pins:{}, productos:[], proveedores:[], comparativos:[], asignaciones:[], bitacora:[], accesos:[], relaciones:[], bloqueos:[]};
+  const db = {seq:{}, usuarios:[], pins:{}, productos:[], proveedores:[], comparativos:[], asignaciones:[], bitacora:[], accesos:[], relaciones:[], bloqueos:[], listas:[], precios:[]};
   const users = [
     ['FERNANDO TREVIÑO','ADMIN','Jefe de Compras','1111'], ['JEFE DE COSTOS','APROBADOR','Jefe de Costos','2222'], ['GERENTE DE COMPRAS','APROBADOR','Gerente de Compras','3333'],
     ['SILVINO','COMPRADOR'], ['HECTOR','COMPRADOR'], ['KARLA ANAID','COMPRADOR'], ['FRANCISCO JAVIER','COMPRADOR'], ['MARIA VICTORIA','COMPRADOR'], ['IVAN','COMPRADOR'] ];
@@ -583,6 +649,22 @@ function buildDemoSeed(){
   db.bloqueos.push({id:1, proveedor_id:12, clave:null, motivo:'No cumple tiempos de entrega', bloqueado_por:'GERENTE DE COMPRAS', bloqueado_en:iso('2026-09-15'), activo:true});
   db.bloqueos.push({id:2, proveedor_id:11, clave:5575, motivo:'No maneja la medida de 4 m con mufa', bloqueado_por:'FERNANDO TREVIÑO', bloqueado_en:iso('2026-09-20'), activo:true});
   db.seq.bloqueos = 2;
+  // Ejemplo de listas de precios: TYMSA mensual (al día) y GRUPO COLLADO trimestral (vencida)
+  const lista = (id, prov, desde, per, archivo, por) => { db.listas.push({id, proveedor_id:prov, archivo, vigencia_desde:desde, vigencia_hasta:null, periodicidad:per, moneda:'MXN', notas:null,
+    filas:0, sin_clave:0, activa:true, cargado_por:por, cargado_en:iso(desde + 'T10:00:00')}); db.proveedores.find(p => p.id === prov).periodicidad_precios = per; };
+  lista(1, 7, '2026-07-01', 'TRIMESTRAL', 'Lista Collado jul-2026.xlsx', 'IVAN');
+  lista(2, 8, '2026-09-01', 'MENSUAL', 'TYMSA septiembre.xlsx', 'IVAN');
+  lista(3, 8, '2026-10-01', 'MENSUAL', 'TYMSA octubre.xlsx', 'IVAN');
+  let pid = 0;
+  S2.forEach(r => {
+    const add = (lid, prov, lp, desc, neto) => { db.precios.push({id:++pid, lista_id:lid, proveedor_id:prov, clave:r.clave, clave_proveedor:null, descripcion:r.descripcion, unidad:'PZA', contenido:null,
+      precio_lista:lp, descuentos:desc, precio_neto:neto, moneda:'MXN', minimo_compra:null, tiempo_entrega:prov === 8 ? 5 : 3, vigencia_desde:db.listas.find(l => l.id === lid).vigencia_desde, vigencia_hasta:null, notas:null, creado_en:iso('2026-10-01')});
+      db.listas.find(l => l.id === lid).filas++; };
+    if (r.collado != null) add(1, 7, r.collado, null, r.collado);
+    if (r.tymsa != null) { const sep = Math.round(r.tymsa * 0.97 * 100) / 100; add(2, 8, Math.round(sep / 0.95 * 100) / 100, '5', sep);
+      add(3, 8, Math.round(r.tymsa / 0.95 * 100) / 100, '5', r.tymsa); }
+  });
+  db.seq.precios = pid; db.seq.listas = 3;
   return db;
 }
 
@@ -702,7 +784,7 @@ function sparkline(points){ // points: [{x:Date, y:number}]
 const S = { user:null, view:'inicio', proveedores:[], usuarios:[], editor:null, dirty:false };
 const VIEWS = [
   ['inicio','Inicio'], ['clave','Consultar clave'], ['comparativos','Comparativos'],
-  ['vigentes','Proveedor por clave'], ['proveedores','Proveedores'], ['admin','Administración'] ];
+  ['vigentes','Proveedor por clave'], ['proveedores','Proveedores'], ['precios','Listas de precios'], ['admin','Administración'] ];
 
 function shell(){
   document.body.innerHTML = `
@@ -734,6 +816,7 @@ async function go(view, arg){
     else if (view === 'editor') await vEditor(main, arg);
     else if (view === 'vigentes') await vVigentes(main);
     else if (view === 'proveedores') await vProveedores(main);
+    else if (view === 'precios') await vPrecios(main);
     else if (view === 'admin') await vAdmin(main);
     if (view !== 'editor') store.set('cmp_view', view);
   } catch(e) { main.innerHTML = `<div class="panel err-msg">No se pudo cargar: ${esc(errMsg(e))}</div>`; console.error(e); }
@@ -895,7 +978,7 @@ async function vClave(main, q){
 }
 async function ficha(out, p){
   out.innerHTML = '<div class="loading">Cargando historial…</div>';
-  const [h, rels, bloqs] = await Promise.all([API.historialClave(p.clave), API.relaciones([p.clave]).catch(() => []), API.bloqueos().catch(() => [])]);
+  const [h, rels, bloqs, hp] = await Promise.all([API.historialClave(p.clave), API.relaciones([p.clave]).catch(() => []), API.bloqueos().catch(() => []), API.historialPrecios(p.clave).catch(() => [])]);
   await refrescarProveedores();
   const vig = h.asignaciones.find(a => a.vigente);
   const serie = [...h.asignaciones].reverse().map(a => ({x:new Date(a.aprobado_en), y:+a.precio}));
@@ -930,6 +1013,7 @@ async function ficha(out, p){
     <section class="stack" style="gap:8px"><div class="row"><h2>Proveedores de esta clave</h2><span class="muted small">Se agregan solos al comparativo cuando se captura la clave. Los bloqueados no se piden.</span><span class="spacer"></span>
         ${isAprob() ? '<button class="btn sm" id="f-bloq">Bloquear un proveedor para esta clave</button>' : ''}</div>
       ${tablaProvClave(p.clave, rels, bloqs)}</section>
+    <section class="stack" style="gap:8px"><h2>Precios de listas de proveedores</h2>${tablaHistPrecios(hp)}</section>
     <section class="stack" style="gap:8px"><h2>Historial de asignaciones</h2>${tablaAsig(h.asignaciones.map(a => ({...a, descripcion:''})), true)}</section>
     <section class="stack" style="gap:8px"><h2>Cotizaciones en comparativos</h2>
       ${cots.length ? `<div class="tbl-wrap"><table><thead><tr><th>Folio</th><th>Fecha</th><th>Estatus</th><th>Comprador</th><th class="num">Cant.</th><th>Precios netos (de menor a mayor)</th><th>Elegido</th></tr></thead><tbody>
@@ -1009,13 +1093,15 @@ async function vEditor(main, arg){
   const claves = c.lineas.map(l => +l.clave).filter(Boolean);
   if (claves.length) await cargarRefs(claves);
   if (arg && arg.nuevaClave) await agregarClaves([arg.nuevaClave], false);
-  if (arg && arg.importado) sugerirProveedores(claves);
+  if (arg && arg.importado) { sugerirProveedores(claves); llenarConListas(); }
   if (arg && (arg.importado || arg.duplicar || arg.nuevaClave)) S.dirty = true;
   c.lineas.forEach((l, i) => calcLinea(i));
   pintarEditor(main);
 }
 async function cargarRefs(claves){
-  const [ps, vs, rs] = await Promise.all([API.productos(claves), API.vigentes(claves), API.relaciones(claves).catch(() => [])]);
+  const [ps, vs, rs, pv] = await Promise.all([API.productos(claves), API.vigentes(claves), API.relaciones(claves).catch(() => []), API.preciosVigentes(claves).catch(() => [])]);
+  if (!S.editor.precios) S.editor.precios = new Map();
+  pv.forEach(x => S.editor.precios.set(x.clave + '|' + x.proveedor_id, x));
   ps.forEach(p => S.editor.prod.set(+p.clave, p));
   vs.forEach(v => S.editor.vig.set(+v.clave, v));
   claves.forEach(k => { if (!S.editor.rel.has(+k)) S.editor.rel.set(+k, []); });
@@ -1031,6 +1117,21 @@ function bloqueoDe(provId, clave){
 const bloqueoGlobal = (provId) => (E() && E().bloq || []).find(x => x.proveedor_id === +provId && x.clave == null) || ((provPorId(provId)||{}).estatus === 'SUSPENDIDO' ? {motivo:'Proveedor suspendido'} : null);
 const relDe = (provId, clave) => (E().rel.get(+clave) || []).find(r => r.proveedor_id === +provId);
 /* Proveedores con historial (comprado / cotizado) que faltan en el comparativo: se agregan solos */
+/* Llena con el último precio de las listas de precios las celdas vacías (o todas las que vienen de lista si sobrescribir) */
+function llenarConListas(sobrescribir=false){
+  const c = E().c; if (!editable() || !E().precios) return 0; let n = 0;
+  c.lineas.forEach(l => { l.precios = l.precios || {};
+    c.proveedores.forEach(p => { const v = E().precios.get(l.clave + '|' + p.id); if (!v || bloqueoDe(p.id, l.clave)) return;
+      const pr = l.precios[p.id] = l.precios[p.id] || {};
+      if (pr.precio != null && !(sobrescribir && pr.lista)) return;
+      if (pr.lista && pr.lista.id === v.lista_id && pr.precio === +v.precio_neto) return;
+      pr.precio = +v.precio_neto;
+      pr.lista = {id:v.lista_id, fecha:v.vigencia_desde, hasta:v.vigencia_hasta, lista:v.precio_lista, desc:v.descuentos, neto:+v.precio_neto, unidad:v.unidad, contenido:v.contenido, minimo:v.minimo_compra, entrega:v.tiempo_entrega};
+      if (v.clave_proveedor && !pr.clave_prov) pr.clave_prov = v.clave_proveedor;
+      n++; }); });
+  if (n) c.lineas.forEach((l, i) => calcLinea(i));
+  return n;
+}
 function conSimilares(){ try { return localStorage.getItem('cmp_similares') !== '0'; } catch(e) { return true; } }
 function sugerirProveedores(claves){
   const c = E().c; if (!editable()) return [];
@@ -1069,7 +1170,8 @@ function calcLinea(i){
   c.proveedores.forEach(p => {
     const pr = l.precios[p.id]; if (!pr) return;
     if (bloqueoDe(p.id, l.clave)) { pr.sinflete = null; pr.neto = null; return; }
-    pr.sinflete = netoDe(pr.precio, p.descuentos, p.factor);
+    const deLista = pr.lista && pr.precio === pr.lista.neto;   // el precio de lista ya viene neto: no se le vuelven a aplicar descuentos
+    pr.sinflete = netoDe(pr.precio, deLista ? '' : p.descuentos, p.factor);
     pr.neto = pr.sinflete === null ? null : Math.round(pr.sinflete * (1 + (num(p.flete) || 0) / 100) * 1e6) / 1e6;
     l._dif[p.id] = pct(pr.sinflete, ult);
     if (pr.neto !== null && (best === null || pr.neto < l.precios[best].neto)) best = String(p.id);
@@ -1132,7 +1234,8 @@ function pintarEditor(main){
     <section class="stack" style="gap:8px">
       <div class="row"><h2>Claves</h2><span class="spacer"></span>
         ${ed ? `<form id="e-addf" class="row" style="gap:6px"><input id="e-add" type="text" placeholder="Agregar claves (ej. 15008 15009)" style="width:240px"><button class="btn">Agregar</button></form>
-        <button class="btn" id="e-paste">Pegar desde Excel</button>` : ''}
+        <button class="btn" id="e-paste">Pegar desde Excel</button>
+        <button class="btn" id="e-listas" title="Llena las celdas vacías con el último precio cargado de cada proveedor">Llenar con listas de precios</button>` : ''}
         <label class="row small" style="gap:6px" title="Agregar solos a los proveedores a los que se les han comprado claves similares (misma marca, grupo y subgrupo)"><input id="e-sim" type="checkbox" ${conSimilares() ? 'checked' : ''}> Proveedores de claves similares</label>
         <label class="row small" style="gap:6px"><input id="e-dem" type="checkbox"> Datos de demanda</label>
       </div>
@@ -1148,10 +1251,18 @@ function pintarEditor(main){
       const cl = v.split(/[\s,;]+/).filter(x => /^\d+$/.test(x)); if (!cl.length) return toast('Escribe claves numéricas', true);
       await agregarClaves(cl); };
     $('#e-paste').onclick = pegarExcel;
+    $('#e-listas').onclick = () => {
+      const vacias = llenarConListas(false);
+      const conLista = c.lineas.some(l => Object.values(l.precios || {}).some(pr => pr.lista));
+      const fin = (n) => { if (n) { marcarCambio(); pintarGrid(); pintarSum(); } toast(n ? `${n} precio(s) actualizados con las listas de precios` : 'No hay precios nuevos en las listas para estas claves y proveedores'); };
+      if (!conLista) return fin(vacias);
+      confirmar('Llenar con listas de precios', `${vacias ? `Se llenaron ${vacias} celda(s) vacías. ` : ''}¿También quieres reemplazar los precios que ya venían de una lista por la lista más reciente? Los precios que capturaste a mano no se tocan.`, 'Reemplazar con la más reciente')
+        .then(ok => fin(vacias + (ok ? llenarConListas(true) : 0)));
+    };
   }
   $('#e-sim').onchange = (e) => {
     try { localStorage.setItem('cmp_similares', e.target.checked ? '1' : '0'); } catch(err) {}
-    if (e.target.checked && editable() && c.lineas.length) { const n = sugerirProveedores(c.lineas.map(l => l.clave)); if (n.length) { c.lineas.forEach((l, i) => calcLinea(i)); marcarCambio(); pintarProvs(); pintarGrid(); pintarSum(); } }
+    if (e.target.checked && editable() && c.lineas.length) { const n = sugerirProveedores(c.lineas.map(l => l.clave)); if (n.length) { llenarConListas(); c.lineas.forEach((l, i) => calcLinea(i)); marcarCambio(); pintarProvs(); pintarGrid(); pintarSum(); } }
   };
   $('#e-dem').onchange = (e) => { c.ver_demanda = e.target.checked; if (editable()) marcarCambio(); pintarGrid(); };
   pintarAcciones(); pintarProvs(); pintarGrid(); pintarSum();
@@ -1247,7 +1358,7 @@ function pintarGrid(){
       if (f === 'ultimo_precio') l.ultimo_origen = 'manual';
       marcarCambio(); if (f !== 'motivo') { calcLinea(i); pintarFila(i); pintarSum(); } });
     $$('input[data-p]', tr).forEach(inp => inp.oninput = () => {
-      const id = inp.dataset.p; l.precios[id] = l.precios[id] || {}; l.precios[id].precio = inp.value === '' ? null : +inp.value;
+      const id = inp.dataset.p; l.precios[id] = l.precios[id] || {}; l.precios[id].precio = inp.value === '' ? null : +inp.value; delete l.precios[id].lista;
       marcarCambio(); calcLinea(i); pintarFila(i); pintarSum(); });
     $$('input[data-k]', tr).forEach(inp => inp.oninput = () => { const id = inp.dataset.k; l.precios[id] = l.precios[id] || {}; l.precios[id].clave_prov = inp.value.trim(); marcarCambio(); });
     $('select[data-f=elegido]', tr).onchange = (e) => {
@@ -1300,7 +1411,10 @@ function pintarFila(i){
     const n = $(`[data-n="${p.id}"]`, tr);
     const rel = relDe(p.id, l.clave), bq = bloqueoDe(p.id, l.clave);
     const neto = (pr.sinflete != null && pr.precio != null && Math.abs(pr.sinflete - pr.precio) > 1e-9) ? 'neto ' + fmt$(pr.sinflete) : '';
-    n.innerHTML = bq ? '<span class="tag-bq">bloqueado</span>' : [rel ? `<span class="tag-rel ${claseTipo(rel.tipo)}" title="${rel.tipo === 'SIMILAR' ? 'Se le han comprado claves similares. ' : ''}${rel.ultima_fecha ? 'Último: ' + esc(fmtF(rel.ultima_fecha)) : ''}${rel.ultimo_precio != null ? ' ' + esc(fmt$(rel.ultimo_precio)) : ''}">${etiquetaTipo(rel.tipo)}</span>` : '', neto].filter(Boolean).join(' · ');
+    const li = pr.lista && pr.precio === pr.lista.neto ? pr.lista : null;
+    const venc = li && li.hasta && li.hasta < hoyISO();
+    const tagLista = li ? `<span class="tag-lista${venc ? ' venc' : ''}" title="Lista de precios vigente desde ${esc(fmtF(li.fecha))}${li.hasta ? ' hasta ' + esc(fmtF(li.hasta)) : ''}. Precio lista ${esc(fmt$(li.lista))}${li.desc ? ' − ' + esc(li.desc) + '%' : ''} = neto ${esc(fmt$(li.neto))}${li.unidad ? ' · ' + esc(li.unidad) : ''}${li.contenido ? ' × ' + esc(fmtN(li.contenido)) : ''}${li.minimo != null ? ' · mínimo ' + esc(fmtN(li.minimo)) : ''}${li.entrega != null ? ' · entrega ' + li.entrega + ' días' : ''}">lista ${esc(fmtF(li.fecha))}${venc ? ' vencida' : ''}</span>` : '';
+    n.innerHTML = bq ? '<span class="tag-bq">bloqueado</span>' : [rel ? `<span class="tag-rel ${claseTipo(rel.tipo)}" title="${rel.tipo === 'SIMILAR' ? 'Se le han comprado claves similares. ' : ''}${rel.ultima_fecha ? 'Último: ' + esc(fmtF(rel.ultima_fecha)) : ''}${rel.ultimo_precio != null ? ' ' + esc(fmt$(rel.ultimo_precio)) : ''}">${etiquetaTipo(rel.tipo)}</span>` : '', tagLista, neto].filter(Boolean).join(' · ');
     if (!bq && rel && rel.tipo !== 'SIMILAR' && pr.precio == null && editable()) $(`td[data-pc="${p.id}"]`, tr).classList.add('falta'); else $(`td[data-pc="${p.id}"]`, tr).classList.remove('falta');
     $(`[data-d="${p.id}"]`, tr).innerHTML = fmtPct((l._dif || {})[p.id] ?? null);
     const fl = $(`[data-fl="${p.id}"]`, tr); if (fl) { fl.innerHTML = pr.neto != null ? fmt$(pr.neto) : '—'; fl.classList.toggle('best', best); }
@@ -1351,6 +1465,8 @@ async function agregarClaves(claves, repintar=true){
   marcarCambio();
   const nuevosProv = sugerirProveedores(nuevas);
   if (nuevosProv.length) c.lineas.forEach((l, i) => calcLinea(i));
+  const llenos = llenarConListas();
+  if (llenos) setTimeout(() => toast(`${llenos} precio(s) tomados de las listas de precios`), 50);
   if (nuevosProv.length && repintar) pintarProvs();
   if (sinCat.length) toast(`No están en el catálogo: ${sinCat.join(', ')}. Revisa que la clave sea correcta.`, true);
   else if (rep) toast(`${rep} clave(s) ya estaban en el comparativo`);
@@ -1389,7 +1505,9 @@ function agregarProvCmp(){
       if (!p) throw new Error('Elige un proveedor o escribe el nombre de uno nuevo');
       if (bloqueoGlobal(p.id)) throw new Error(`${p.nombre} está bloqueado para todas las claves: ${bloqueoGlobal(p.id).motivo || ''}`);
       c.proveedores.push({id:p.id, nombre:p.nombre, descuentos:p.descuentos || '', factor:'', flete:'', entrega_tipo:'', entrega:p.tiempo_entrega || '', condiciones:p.condiciones_pago || '', con_clave:false});
+      const llenos = llenarConListas();
       c.lineas.forEach((l, i) => calcLinea(i)); marcarCambio(); pintarProvs(); pintarGrid(); pintarSum();
+      if (llenos) toast(`${llenos} precio(s) de ${p.nombre} tomados de sus listas de precios`);
     }}]});
 }
 function editarProvCmp(id){
@@ -1549,6 +1667,243 @@ function exportarComparativo(){
   ws['!autofilter'] = {ref: XLSX.utils.encode_range({s:{r:info.length, c:0}, e:{r:info.length + rows.length, c:head.length - 1}})};
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'COMPARATIVO');
   descargarXlsx(wb, `${c.folio || 'comparativo'} ${c.titulo}`.replace(/[\\/:*?"<>|]/g, '').slice(0, 80) + '.xlsx');
+}
+
+/* ====================================================================
+   LISTAS DE PRECIOS DE PROVEEDORES
+   ==================================================================== */
+const PERIODOS = [['SEMANAL',7],['QUINCENAL',15],['MENSUAL',31],['BIMESTRAL',62],['TRIMESTRAL',92],['SEMESTRAL',183],['ANUAL',366],['EVENTUAL',null]];
+const diasPeriodo = (p) => { const x = PERIODOS.find(q => q[0] === p); return x ? x[1] : null; };
+const hoyISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
+const sumaDias = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+const diasEntre = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5);
+
+/* Estado de actualización de un proveedor según su periodicidad */
+function estadoLista(periodicidad, ultima){
+  if (!ultima) return {cls:'EVAL', txt:'SIN LISTA', prox:null};
+  const d = diasPeriodo(periodicidad); if (!d) return {cls:'', txt:'SIN PERIODICIDAD', prox:null};
+  const prox = sumaDias(ultima, d), falta = diasEntre(hoyISO(), prox);
+  if (falta < 0) return {cls:'RECHAZADO', txt:`VENCIDA HACE ${-falta} DÍA${falta === -1 ? '' : 'S'}`, prox};
+  if (falta <= 7) return {cls:'rev', txt:falta === 0 ? 'VENCE HOY' : `VENCE EN ${falta} DÍA${falta === 1 ? '' : 'S'}`, prox};
+  return {cls:'APROBADO', txt:'AL DÍA', prox};
+}
+
+async function vPrecios(main){
+  await refrescarProveedores();
+  const listas = await API.listasPrecio();
+  const ultima = new Map(); listas.filter(l => l.activa).forEach(l => { const x = ultima.get(l.proveedor_id); if (!x || l.vigencia_desde > x.vigencia_desde) ultima.set(l.proveedor_id, l); });
+  const provs = S.proveedores.filter(p => ultima.has(p.id) || p.periodicidad_precios).map(p => {
+    const u = ultima.get(p.id); const per = p.periodicidad_precios || (u && u.periodicidad); return {p, u, per, e:estadoLista(per, u && u.vigencia_desde)}; })
+    .sort((a, b) => ({RECHAZADO:0, rev:1, EVAL:2, '':3, APROBADO:4}[a.e.cls] - {RECHAZADO:0, rev:1, EVAL:2, '':3, APROBADO:4}[b.e.cls]) || a.p.nombre.localeCompare(b.p.nombre));
+  const vencidas = provs.filter(x => x.e.cls === 'RECHAZADO').length, porVencer = provs.filter(x => x.e.cls === 'rev').length;
+  main.innerHTML = `<div class="stack">
+    <div class="row"><h1>Listas de precios</h1><span class="spacer"></span>
+      <button class="btn" id="lp-tpl">Plantilla en blanco</button><button class="btn pri" id="lp-new">Cargar lista de precios</button></div>
+    <p class="muted" style="margin:0;max-width:820px">Pide a cada proveedor su lista en Excel con la periodicidad con que cambian sus precios y cárgala aquí. Cada carga queda en el histórico; al capturar una clave en un comparativo se llena solo el último precio de cada proveedor.</p>
+    <div class="grid g4">
+      <div class="panel kpi"><span class="v">${provs.filter(x => x.u).length}</span><span class="l">Proveedores con lista cargada</span></div>
+      <div class="panel kpi ${vencidas ? 'attn' : ''}"><span class="v">${vencidas}</span><span class="l">Con lista vencida según su periodicidad</span></div>
+      <div class="panel kpi"><span class="v">${porVencer}</span><span class="l">Vencen en los próximos 7 días</span></div>
+      <div class="panel kpi"><span class="v">${listas.filter(l => l.activa).reduce((s, l) => s + (l.filas || 0), 0).toLocaleString('es-MX')}</span><span class="l">Precios en el histórico</span></div>
+    </div>
+    <section class="stack" style="gap:8px"><div class="row"><h2>Actualización por proveedor</h2><span class="spacer"></span><input id="lp-q" type="search" placeholder="Buscar proveedor" style="width:220px"></div>
+      <div id="lp-provs"></div></section>
+    <section class="stack" style="gap:8px"><h2>Cargas</h2><div id="lp-cargas"></div></section></div>`;
+  const pintaProvs = () => {
+    const q = $('#lp-q').value.trim().toUpperCase(); const rs = provs.filter(x => !q || x.p.nombre.includes(q));
+    $('#lp-provs').innerHTML = rs.length ? `<div class="tbl-wrap"><table><thead><tr><th>Proveedor</th><th>Periodicidad</th><th>Última lista</th><th>Próxima actualización</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${rs.map(x => `<tr><td><b>${esc(x.p.nombre)}</b>${x.p.id_sistema ? ` <span class="small muted mono">ID ${x.p.id_sistema}</span>` : ''}</td><td class="small">${esc(x.per || '—')}</td>
+        <td class="small">${x.u ? `${fmtF(x.u.vigencia_desde)}<div class="muted">${(x.u.filas || 0).toLocaleString('es-MX')} precios · ${esc(x.u.cargado_por)}</div>` : '—'}</td>
+        <td class="small">${x.e.prox ? fmtF(x.e.prox) : '—'}</td><td><span class="pill ${x.e.cls}">${x.e.txt}</span></td>
+        <td style="white-space:nowrap"><button class="btn sm" data-tpl="${x.p.id}">Plantilla</button> <button class="btn sm pri" data-carga="${x.p.id}">Cargar</button></td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="tbl-wrap"><div class="empty">Todavía no hay listas. Presiona “Cargar lista de precios” o descarga la plantilla de un proveedor desde Proveedores.</div></div>`;
+    $$('[data-tpl]', $('#lp-provs')).forEach(b => b.onclick = () => descargarPlantillaPrecios(provPorId(b.dataset.tpl)).catch(e => toast(errMsg(e), true)));
+    $$('[data-carga]', $('#lp-provs')).forEach(b => b.onclick = () => cargarListaPrecios(provPorId(b.dataset.carga)));
+  };
+  $('#lp-q').oninput = pintaProvs; pintaProvs();
+  $('#lp-cargas').innerHTML = listas.length ? `<div class="tbl-wrap"><table><thead><tr><th>Cargada</th><th>Proveedor</th><th>Archivo</th><th>Vigencia</th><th class="num">Precios</th><th class="num">Sin clave</th><th>Cargó</th><th>Estado</th></tr></thead><tbody>
+    ${listas.slice(0, 300).map(l => `<tr class="click${l.activa ? '' : ' anulada'}" data-lista="${l.id}"><td class="small">${fmtFH(l.cargado_en)}</td><td>${esc((provPorId(l.proveedor_id) || {}).nombre || '#' + l.proveedor_id)}</td>
+      <td class="small">${esc(l.archivo || '')}</td><td class="small">${fmtF(l.vigencia_desde)}${l.vigencia_hasta ? ' – ' + fmtF(l.vigencia_hasta) : ''}</td><td class="num">${(l.filas || 0).toLocaleString('es-MX')}</td>
+      <td class="num ${l.sin_clave ? 'up' : ''}">${l.sin_clave || 0}</td><td class="small">${esc(l.cargado_por)}</td><td>${l.activa ? '<span class="pill APROBADO">ACTIVA</span>' : '<span class="pill ANULADO">ANULADA</span>'}</td></tr>`).join('')}
+    </tbody></table></div>` : `<div class="tbl-wrap"><div class="empty">Sin cargas.</div></div>`;
+  $$('[data-lista]', $('#lp-cargas')).forEach(r => r.onclick = () => detalleLista(listas.find(l => l.id === +r.dataset.lista)));
+  $('#lp-new').onclick = () => cargarListaPrecios(null);
+  $('#lp-tpl').onclick = () => descargarPlantillaPrecios(null).catch(e => toast(errMsg(e), true));
+}
+
+/* ---------- Plantilla para el proveedor ---------- */
+const COLS_PLANTILLA = ['CLAVE MASFERRE','DESCRIPCIÓN MASFERRE','CLAVE PROVEEDOR','DESCRIPCIÓN PROVEEDOR','UNIDAD','PIEZAS POR EMPAQUE','PRECIO LISTA SIN IVA','DESCUENTOS (%)','PRECIO NETO SIN IVA','MÍNIMO DE COMPRA','TIEMPO DE ENTREGA (DÍAS)','VIGENCIA HASTA','OBSERVACIONES','ÚLTIMO PRECIO REGISTRADO'];
+async function descargarPlantillaPrecios(p){
+  let filas = [];
+  if (p) {
+    const [rels, vig] = await Promise.all([API.relacionesProveedor(p.id), API.preciosVigentesProveedor(p.id).catch(() => [])]);
+    const claves = [...new Set([...rels.filter(r => r.tipo !== 'SIMILAR').map(r => r.clave), ...vig.map(v => v.clave)])].sort((a, b) => a - b);
+    const prods = new Map((await API.productos(claves)).map(x => [+x.clave, x]));
+    const vm = new Map(vig.map(v => [+v.clave, v])), rm = new Map(rels.map(r => [+r.clave, r]));
+    filas = claves.map(k => { const pr = prods.get(+k) || {}, v = vm.get(+k) || {}, r = rm.get(+k) || {};
+      return [k, pr.descripcion || '', v.clave_proveedor || r.clave_proveedor || '', v.descripcion || '', v.unidad || '', v.contenido ?? null, null, null, null, v.minimo_compra ?? null, v.tiempo_entrega ?? null, null, null, v.precio_neto ?? r.ultimo_precio ?? null]; });
+  }
+  const ws = XLSX.utils.aoa_to_sheet([COLS_PLANTILLA, ...filas]);
+  ws['!cols'] = COLS_PLANTILLA.map((h, i) => ({wch: [1,3].includes(i) ? 44 : Math.max(12, h.length + 2)}));
+  for (let r = 1; r <= filas.length; r++) [6, 8, 13].forEach(c => { const cell = ws[XLSX.utils.encode_cell({r, c})]; if (cell && cell.t === 'n') cell.z = '"$"#,##0.00'; });
+  const inst = XLSX.utils.aoa_to_sheet([
+    ['LISTA DE PRECIOS — ' + (p ? p.nombre : 'PROVEEDOR')], [],
+    ['1. Llene una fila por producto. Si la clave Masferre ya viene, no la cambie.'],
+    ['2. PRECIO LISTA SIN IVA es obligatorio. Si da descuentos, escríbalos en DESCUENTOS (%) separados con + (ej. 10+5) o ponga directo el PRECIO NETO SIN IVA.'],
+    ['3. Si agrega productos nuevos, escriba su CLAVE PROVEEDOR y DESCRIPCIÓN PROVEEDOR.'],
+    ['4. VIGENCIA HASTA es opcional (fecha en que dejan de valer los precios).'],
+    ['5. La columna ÚLTIMO PRECIO REGISTRADO es solo de referencia; no se carga.'],
+    ['6. No cambie los nombres de las columnas.']]);
+  inst['!cols'] = [{wch:120}];
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'LISTA DE PRECIOS'); XLSX.utils.book_append_sheet(wb, inst, 'INSTRUCCIONES');
+  descargarXlsx(wb, `Lista de precios - ${p ? p.nombre.replace(/[\\/:*?"<>|]/g, '').slice(0, 50) : 'plantilla'} - ${hoyISO()}.xlsx`);
+  if (p) toast(`Plantilla con ${filas.length} claves de ${p.nombre}`);
+}
+
+/* ---------- Carga de un Excel de precios ---------- */
+const CAMPOS_PRECIO = [['','Ignorar'],['clave','Clave Masferre (nuestra)'],['clave_proveedor','Clave del proveedor'],['descripcion','Descripción del proveedor'],['unidad','Unidad'],['contenido','Piezas por empaque'],
+  ['precio_lista','Precio de lista'],['descuentos','Descuentos (%)'],['precio_neto','Precio neto'],['minimo_compra','Mínimo de compra'],['tiempo_entrega','Tiempo de entrega (días)'],['vigencia_hasta','Vigencia hasta'],['notas','Observaciones']];
+function adivinaPrecio(h){
+  const n = normH(h);
+  if (!n || n.startsWith('ultimoprecio') || n === 'descripcionmasferre') return '';
+  if (/masferre|sanver|nuestra|interna|clavemf/.test(n)) return 'clave';
+  if (n.includes('neto')) return 'precio_neto';
+  if (n.startsWith('desc') && !n.startsWith('descrip')) return 'descuentos';
+  if (n.startsWith('descrip')) return 'descripcion';
+  if (n.includes('precio') || n.startsWith('costo') || n === 'pu' || n.includes('lista')) return 'precio_lista';
+  if (/^(clave|codigo|sku|modelo|catalogo|noparte|numparte|parte|articulo|cve)/.test(n)) return 'clave_proveedor';
+  if (n === 'um' || n.startsWith('unidad') || n.startsWith('umedida')) return 'unidad';
+  if (/^(piezas|pzas|contenido|empaque|master|inner|caja)/.test(n)) return 'contenido';
+  if (n.startsWith('minimo') || n === 'moq') return 'minimo_compra';
+  if (n.includes('entrega') || n.startsWith('tiempo') || n.startsWith('dias')) return 'tiempo_entrega';
+  if (n.includes('vigencia') || n.includes('valido')) return 'vigencia_hasta';
+  if (/^(observ|nota|coment)/.test(n)) return 'notas';
+  return '';
+}
+function cargarListaPrecios(prov){
+  const m = modal({title:'Cargar lista de precios', wide:true, body:`
+    <datalist id="lp-dl">${S.proveedores.map(p => `<option value="${esc(p.nombre)}">`).join('')}</datalist>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <div class="field" style="grid-column:span 2"><label for="lp-p">Proveedor</label><input id="lp-p" type="text" list="lp-dl" value="${esc(prov ? prov.nombre : '')}" placeholder="Escribe para buscar"></div>
+      <div class="field"><label for="lp-d">Vigente desde</label><input id="lp-d" type="date" value="${hoyISO()}"></div>
+      <div class="field"><label for="lp-h">Vigente hasta (opcional)</label><input id="lp-h" type="date"></div>
+      <div class="field"><label for="lp-per">Periodicidad del proveedor</label><select id="lp-per"><option value="">—</option>${PERIODOS.map(([k]) => `<option ${prov && prov.periodicidad_precios === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
+      <div class="field"><label for="lp-mon">Moneda</label><select id="lp-mon"><option>MXN</option><option>USD</option></select></div>
+    </div>
+    <label class="row small" style="gap:8px"><input id="lp-iva" type="checkbox"> Los precios del archivo incluyen IVA (se guardan sin IVA, divididos entre 1.16)</label>
+    <div class="field"><label for="lp-n">Notas</label><input id="lp-n" type="text" placeholder="Ej. aumento 4% por acero; flete incluido a partir de 5,000"></div>
+    <div class="row"><input id="lp-f" type="file" accept=".xlsx,.xls,.csv"><select id="lp-h2" style="width:200px" hidden></select></div>
+    <div id="lp-map"></div><div class="err-msg"></div>`,
+    actions:[{label:'Cancelar'}, {label:'Cargar lista', cls:'pri', onClick: async (el) => subirLista(el)}]});
+  const el = m.el; let wb = null;
+  $('#lp-p', el).onchange = () => { const p = S.proveedores.find(x => x.nombre === $('#lp-p', el).value.trim().toUpperCase()); if (p && p.periodicidad_precios) $('#lp-per', el).value = p.periodicidad_precios; };
+  $('#lp-f', el).onchange = async (e) => { const f = e.target.files[0]; if (!f) return; $('.err-msg', el).textContent = '';
+    try { wb = await leerExcel(f); } catch(err) { $('.err-msg', el).textContent = errMsg(err); return; }
+    el._archivo = f.name;
+    $('#lp-h2', el).innerHTML = wb.SheetNames.map(n => `<option>${esc(n)}</option>`).join(''); $('#lp-h2', el).hidden = wb.SheetNames.length < 2;
+    $('#lp-h2', el).onchange = mapear; mapear(); };
+  function mapear(){
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[$('#lp-h2', el).value || wb.SheetNames[0]], {header:1, raw:true, defval:null, blankrows:false});
+    const hr = Math.max(0, aoa.findIndex(r => (r||[]).filter(v => v !== null && v !== '').length >= 3));
+    const head = aoa[hr] || [], data = aoa.slice(hr + 1);
+    const cols = head.map((h, j) => ({j, h, campo:adivinaPrecio(h), muestra:data.slice(0, 3).map(r => (r||[])[j]).filter(v => v !== null)})).filter(c => c.h !== null || c.muestra.length);
+    el._precio = {data, cols};
+    $('#lp-map', el).innerHTML = `<p class="small muted" style="margin:0">${data.length.toLocaleString('es-MX')} filas. Revisa qué es cada columna; con la plantilla del portal se reconocen solas.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Col.</th><th>Encabezado</th><th>Ejemplo</th><th>Es…</th></tr></thead><tbody>
+      ${cols.map((c, k) => `<tr><td class="mono">${XLSX.utils.encode_col(c.j)}</td><td>${esc(c.h ?? '')}</td><td class="small mono">${c.muestra.map(v => esc(v instanceof Date ? fmtF(v) : String(v).slice(0, 24))).join(' · ')}</td>
+        <td><select data-c="${k}" style="width:220px">${CAMPOS_PRECIO.map(([v, l]) => `<option value="${v}" ${c.campo === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
+      <p class="small muted" style="margin:0">Si un renglón trae solo la clave del proveedor, el portal busca nuestra clave con la que ya tiene registrada para ese proveedor. Los que no encuentre quedan “sin clave” para asignarlos después.</p>`;
+    $$('[data-c]', el).forEach(s => s.onchange = () => { cols[+s.dataset.c].campo = s.value; });
+  }
+}
+function filasDePrecios(data, cols, conIva){
+  const col = (f) => cols.find(c => c.campo === f), val = (r, f) => col(f) ? (r || [])[col(f).j] : null;
+  const iva = conIva ? 1.16 : 1, r4 = (x) => x == null ? null : Math.round(x * 10000) / 10000;
+  const filas = [];
+  data.forEach(r => {
+    const clave = String(val(r, 'clave') ?? '').trim(), cp = val(r, 'clave_proveedor') == null ? '' : String(val(r, 'clave_proveedor')).trim();
+    let lista = aNum(val(r, 'precio_lista')), neto = aNum(val(r, 'precio_neto'));
+    if ((!/^\d+$/.test(clave) && !cp) || (lista == null && neto == null)) return;
+    let d = val(r, 'descuentos'), desc = null;
+    if (d != null && d !== '') { if (typeof d === 'number') desc = String(d > 0 && d < 1 ? Math.round(d * 10000) / 100 : d); else desc = String(d).replace(/%/g, '').replace(/\s*,\s*/g, '+').trim(); if (desc === '0') desc = null; }
+    if (lista != null) lista = lista / iva; if (neto != null) neto = neto / iva;
+    if (neto == null) neto = netoDe(lista, desc, '');
+    filas.push({clave:/^\d+$/.test(clave) ? clave : null, clave_proveedor:cp || null, descripcion:val(r, 'descripcion') ? String(val(r, 'descripcion')).trim() : null,
+      unidad:val(r, 'unidad') ? String(val(r, 'unidad')).trim() : null, contenido:aNum(val(r, 'contenido')), precio_lista:r4(lista), descuentos:desc, precio_neto:r4(neto),
+      minimo_compra:aNum(val(r, 'minimo_compra')), tiempo_entrega:aNum(val(r, 'tiempo_entrega')), vigencia_hasta:aFecha(val(r, 'vigencia_hasta')), notas:val(r, 'notas') ? String(val(r, 'notas')).trim() : null});
+  });
+  return filas;
+}
+async function subirLista(el){
+  const p = S.proveedores.find(x => x.nombre === $('#lp-p', el).value.trim().toUpperCase());
+  if (!p) throw new Error('Elige un proveedor de la lista (si no existe, dalo de alta en Proveedores)');
+  if (!el._precio) throw new Error('Elige el archivo de Excel');
+  const cols = el._precio.cols;
+  if (!cols.some(c => c.campo === 'clave') && !cols.some(c => c.campo === 'clave_proveedor')) throw new Error('Indica la columna de nuestra clave o la de la clave del proveedor');
+  if (!cols.some(c => c.campo === 'precio_lista') && !cols.some(c => c.campo === 'precio_neto')) throw new Error('Indica la columna del precio');
+  const usados = cols.filter(c => c.campo); if (new Set(usados.map(c => c.campo)).size !== usados.length) throw new Error('Hay dos columnas asignadas al mismo campo');
+  const filas = filasDePrecios(el._precio.data, cols, $('#lp-iva', el).checked);
+  if (!filas.length) throw new Error('No encontré renglones con clave y precio');
+  const lista = {proveedor_id:p.id, archivo:el._archivo, vigencia_desde:$('#lp-d', el).value || hoyISO(), vigencia_hasta:$('#lp-h', el).value || null,
+    periodicidad:$('#lp-per', el).value || null, moneda:$('#lp-mon', el).value, notas:$('#lp-n', el).value.trim() || null};
+  const btn = $('[data-a="1"]', el); btn.textContent = 'Cargando…';
+  const r = await API.cargarPrecios(S.user.nombre, lista, filas, (i, t) => { btn.textContent = `Cargando… ${Math.round(i / t * 100)}%`; });
+  toast(`Lista de ${p.nombre}: ${r.filas.toLocaleString('es-MX')} precios cargados${r.sin_clave ? ` · ${r.sin_clave} sin clave Masferre, asígnalas en la carga` : ''}`);
+  await refrescarProveedores();
+  if (S.view === 'precios') go('precios');
+  if (r.sin_clave) { const ls = await API.listasPrecio(); const l = ls.find(x => x.id === r.lista_id); if (l) setTimeout(() => detalleLista(l), 300); }
+}
+
+/* ---------- Detalle de una carga ---------- */
+async function detalleLista(l){
+  const filas = await API.preciosDeLista(l.id); const p = provPorId(l.proveedor_id) || {nombre:'#' + l.proveedor_id};
+  const sin = filas.filter(f => f.clave == null);
+  const m = modal({title:`${p.nombre} · lista del ${fmtF(l.vigencia_desde)}`, wide:true, body:`
+    <div class="row small" style="gap:14px">${l.activa ? '<span class="pill APROBADO">ACTIVA</span>' : `<span class="pill ANULADO">ANULADA</span> <span class="muted">${esc(l.anulada_por || '')} · ${esc(l.motivo_anulacion || '')}</span>`}
+      <span>${esc(l.archivo || '')}</span><span>${l.periodicidad ? esc(l.periodicidad) : ''}</span><span>Cargó ${esc(l.cargado_por)} · ${fmtFH(l.cargado_en)}</span>${l.notas ? `<span>“${esc(l.notas)}”</span>` : ''}</div>
+    ${sin.length && l.activa ? `<div class="note"><b>${sin.length} renglón(es) sin clave Masferre.</b> Escribe nuestra clave y presiona Asignar; se aplica a todas las listas de este proveedor con esa clave del proveedor.</div>` : ''}
+    <input id="dl-q" type="search" placeholder="Buscar clave o descripción" style="max-width:320px">
+    <div class="tbl-wrap" style="max-height:55vh;overflow:auto"><table><thead><tr><th>Clave</th><th>Clave prov.</th><th>Descripción</th><th>Unidad</th><th class="num">Precio lista</th><th>Desc.</th><th class="num">Neto sin IVA</th><th class="num">Mín.</th><th class="num">Entrega</th></tr></thead><tbody id="dl-b"></tbody></table></div>`,
+    actions:[...(l.activa && isAprob() ? [{label:'Anular esta lista', cls:'bad', onClick: async () => {
+      const r = await pedirPin({title:'Anular lista de precios', label:'Anular', cls:'bad', conComentario:true, comentarioObligatorio:true, etiqueta:'Motivo',
+        texto:'Sus precios dejan de usarse en comparativos y el último precio de cada clave regresa a la lista anterior del proveedor.', accion:(pin, com) => API.anularLista(l.id, S.user.id, pin, com)});
+      if (!r) return false; toast('Lista anulada'); if (S.view === 'precios') go('precios'); }}] : []),
+      {label:'Exportar Excel', onClick: async () => { const ws = XLSX.utils.json_to_sheet(filas.map(f => ({'CLAVE MASFERRE':f.clave, 'CLAVE PROVEEDOR':f.clave_proveedor, 'DESCRIPCIÓN':f.descripcion, UNIDAD:f.unidad,
+        'PIEZAS POR EMPAQUE':f.contenido, 'PRECIO LISTA SIN IVA':f.precio_lista, 'DESCUENTOS (%)':f.descuentos, 'PRECIO NETO SIN IVA':f.precio_neto, 'MÍNIMO DE COMPRA':f.minimo_compra, 'TIEMPO DE ENTREGA (DÍAS)':f.tiempo_entrega, 'VIGENCIA DESDE':f.vigencia_desde, 'VIGENCIA HASTA':f.vigencia_hasta, OBSERVACIONES:f.notas})));
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'PRECIOS'); descargarXlsx(wb, `Precios ${p.nombre} ${l.vigencia_desde}.xlsx`); return false; }},
+      {label:'Cerrar', cls:'pri'}]});
+  const pinta = () => {
+    const q = $('#dl-q', m.el).value.trim().toUpperCase();
+    const rs = filas.filter(f => !q || String(f.clave || '') === q || (f.clave_proveedor || '').toUpperCase().includes(q) || (f.descripcion || '').toUpperCase().includes(q))
+      .sort((a, b) => (a.clave == null ? 0 : 1) - (b.clave == null ? 0 : 1));
+    $('#dl-b', m.el).innerHTML = rs.slice(0, 600).map(f => `<tr><td>${f.clave != null ? `<a href="#" class="mono" data-clave="${f.clave}">${f.clave}</a>` : (l.activa ? `<span class="row" style="gap:4px;flex-wrap:nowrap"><input type="text" data-asig="${esc(f.clave_proveedor || '')}" placeholder="clave" style="width:80px;padding:3px 6px"><button class="btn sm" data-ok>Asignar</button></span>` : '<span class="up small">sin clave</span>')}</td>
+      <td class="mono small">${esc(f.clave_proveedor || '')}</td><td class="small">${esc(f.descripcion || '')}</td><td class="small">${esc(f.unidad || '')}${f.contenido ? ` × ${fmtN(f.contenido)}` : ''}</td>
+      <td class="num">${fmt$(f.precio_lista)}</td><td class="small mono">${esc(f.descuentos || '')}</td><td class="num"><b>${fmt$(f.precio_neto)}</b></td><td class="num">${f.minimo_compra != null ? fmtN(f.minimo_compra) : '—'}</td><td class="num">${f.tiempo_entrega != null ? f.tiempo_entrega + ' d' : '—'}</td></tr>`).join('')
+      || '<tr><td colspan="9" class="empty">Sin renglones</td></tr>';
+    bindClaveLinks($('#dl-b', m.el)); $$('a[data-clave]', m.el).forEach(a => a.addEventListener('click', () => m.close()));
+    $$('[data-ok]', m.el).forEach(b => b.onclick = async () => {
+      const inp = b.previousElementSibling, k = inp.value.trim(), cp = inp.dataset.asig;
+      if (!/^\d+$/.test(k)) return toast('Escribe una clave numérica', true);
+      try { const n = await API.asignarClavePrecio(S.user.nombre, l.proveedor_id, cp, +k); filas.forEach(f => { if (f.clave == null && f.clave_proveedor === cp) f.clave = +k; });
+        API.log(S.user.nombre, 'ASIGNÓ CLAVE A PRECIO', 'proveedor', p.nombre, {clave_proveedor:cp, clave:+k}); toast(`Clave ${k} asignada a ${n} precio(s)`); pinta(); }
+      catch(e) { toast(errMsg(e), true); } });
+  };
+  $('#dl-q', m.el).oninput = pinta; pinta();
+}
+
+/* ---------- Historial de precios de una clave (Consultar clave) ---------- */
+function tablaHistPrecios(hist){
+  if (!hist.length) return `<div class="tbl-wrap"><div class="empty">No hay precios de listas para esta clave. Carga las listas de los proveedores en “Listas de precios”.</div></div>`;
+  const ult = new Set(), ant = new Map();
+  const prev = (h, i) => hist.slice(i + 1).find(x => x.proveedor_id === h.proveedor_id);
+  return `<div class="tbl-wrap" style="max-height:420px;overflow:auto"><table><thead><tr><th>Proveedor</th><th>Vigencia</th><th class="num">Precio lista</th><th>Desc.</th><th class="num">Neto sin IVA</th><th class="num">Var.</th><th>Unidad</th><th class="num">Mín.</th><th class="num">Entrega</th><th>Lista</th></tr></thead><tbody>
+    ${hist.map((h, i) => { const primero = !ult.has(h.proveedor_id); ult.add(h.proveedor_id); const p = prev(h, i);
+      return `<tr${primero ? '' : ' class="anulada"'}><td>${primero ? `<b>${esc((provPorId(h.proveedor_id) || {}).nombre || '#' + h.proveedor_id)}</b>` : esc((provPorId(h.proveedor_id) || {}).nombre || '')}</td>
+      <td class="small">${fmtF(h.vigencia_desde)}${h.vigencia_hasta ? ' – ' + fmtF(h.vigencia_hasta) : ''}</td><td class="num">${fmt$(h.precio_lista)}</td><td class="small mono">${esc(h.descuentos || '')}</td>
+      <td class="num">${primero ? '<b>' : ''}${fmt$(h.precio_neto)}${primero ? '</b>' : ''}</td><td class="num">${p ? fmtPct(pct(h.precio_neto, p.precio_neto)) : '—'}</td>
+      <td class="small">${esc(h.unidad || '')}${h.contenido ? ` × ${fmtN(h.contenido)}` : ''}</td><td class="num">${h.minimo_compra != null ? fmtN(h.minimo_compra) : '—'}</td><td class="num">${h.tiempo_entrega != null ? h.tiempo_entrega + ' d' : '—'}</td>
+      <td class="small muted">${esc(h.archivo || '')}</td></tr>`; }).join('')}
+  </tbody></table></div><p class="small muted" style="margin:4px 0 0">En negritas, el último precio de cada proveedor (el que se usa en los comparativos).</p>`;
 }
 
 /* ====================================================================
@@ -1773,7 +2128,7 @@ function editarProveedor(p){
   acts.push({label:'Guardar', cls:'pri', onClick: async (el) => {
     const v = (id) => $('#' + id, el).value.trim();
     const row = {id:p.id, nombre:v('pv-n'), id_sistema:aNum(v('pv-ids')), razon_social:v('pv-r') || null, rfc:v('pv-rfc') || null, contacto:v('pv-c') || null, telefono:v('pv-t') || null, correo:v('pv-m') || null,
-      condiciones_pago:v('pv-cp') || null, dias_credito:aNum(v('pv-dc')), tiempo_entrega:aNum(v('pv-te')), descuentos:v('pv-d') || null, notas:v('pv-no') || null};
+      condiciones_pago:v('pv-cp') || null, dias_credito:aNum(v('pv-dc')), tiempo_entrega:aNum(v('pv-te')), descuentos:v('pv-d') || null, periodicidad_precios:v('pv-per') || null, notas:v('pv-no') || null};
     if (!row.nombre) throw new Error('Escribe el nombre');
     const r = await API.guardarProveedor(row, S.user.nombre);
     API.log(S.user.nombre, n ? 'ALTA PROVEEDOR' : 'EDITÓ PROVEEDOR', 'proveedor', r.nombre);
@@ -1786,15 +2141,21 @@ function editarProveedor(p){
       ${F('pv-c','Contacto',p.contacto)}${F('pv-t','Teléfono',p.telefono)}${F('pv-m','Correo',p.correo,'text')}
       ${F('pv-cp','Condiciones de pago',p.condiciones_pago,'text','Crédito, contado, flete…')}${F('pv-dc','Días de crédito',p.dias_credito,'number')}${F('pv-te','Tiempo de entrega (días)',p.tiempo_entrega,'number')}
       ${F('pv-d','Descuentos habituales',p.descuentos,'text','15+4+1')}
+      <div class="field"><label for="pv-per">Actualiza precios</label><select id="pv-per"><option value="">—</option>${PERIODOS.map(([k]) => `<option ${p.periodicidad_precios === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
     </div>
     <div class="field"><label for="pv-no">Notas</label><textarea id="pv-no">${esc(p.notas || '')}</textarea></div>
     ${n ? '' : '<div id="pv-bq" class="stack" style="gap:8px"><div class="loading">Cargando bloqueos…</div></div>'}
     <div class="err-msg"></div>`, actions:acts, onOpen: n ? null : async (el) => {
-      const [bloqs, rels] = await Promise.all([API.bloqueos().catch(() => []), API.relacionesProveedor(p.id).catch(() => [])]);
+      const [bloqs, rels, listas] = await Promise.all([API.bloqueos().catch(() => []), API.relacionesProveedor(p.id).catch(() => []), API.listasPrecio().catch(() => [])]);
+      const misListas = listas.filter(l => l.proveedor_id === p.id && l.activa).sort((a, b) => b.vigencia_desde.localeCompare(a.vigencia_desde));
+      const ul = misListas[0], est = estadoLista(p.periodicidad_precios || (ul && ul.periodicidad), ul && ul.vigencia_desde);
       const mios = bloqs.filter(b => b.proveedor_id === p.id), g = mios.find(b => b.clave == null), porClave = mios.filter(b => b.clave != null);
       const comp = rels.filter(r => r.tipo === 'COMPRADO').length, sim = rels.filter(r => r.tipo === 'SIMILAR').length;
       const box = $('#pv-bq', el); if (!box) return;
       box.innerHTML = `<hr style="border:0;border-top:1px solid var(--line);width:100%">
+        <div class="row"><h3>Listas de precios</h3><span class="pill ${est.cls}">${est.txt}</span>
+          <span class="small muted">${ul ? `Última: ${fmtF(ul.vigencia_desde)} · ${(ul.filas || 0).toLocaleString('es-MX')} precios · ${misListas.length} lista(s) en el histórico` : 'Sin listas cargadas'}${est.prox ? ` · próxima ${fmtF(est.prox)}` : ''}</span>
+          <span class="spacer"></span><button class="btn sm" id="pv-tpl">Descargar plantilla</button><button class="btn sm pri" id="pv-lp">Cargar lista</button></div>
         <div class="row"><h3>Claves y bloqueos</h3><span class="small muted">Historial en ${rels.length.toLocaleString('es-MX')} claves (${comp.toLocaleString('es-MX')} compradas, ${(rels.length - comp - sim).toLocaleString('es-MX')} solo cotizadas, ${sim.toLocaleString('es-MX')} similares)</span></div>
         <div class="row">${g ? `<span class="pill RECHAZADO">BLOQUEADO EN TODAS LAS CLAVES</span><span class="small muted">${esc(g.motivo || '')} · ${esc(g.bloqueado_por)} · ${fmtF(g.bloqueado_en)}</span>${isAprob() ? `<button class="btn sm" data-desbloq="${g.id}">Desbloquear</button>` : ''}`
           : `<span class="small">Se pide en comparativos.</span>${isAprob() ? `<button class="btn sm bad" data-bloqc="${p.id}">Bloquear en todas las claves</button>` : ''}`}</div>
@@ -1802,6 +2163,8 @@ function editarProveedor(p){
           ${porClave.map(b => `<tr><td class="mono">${b.clave}</td><td class="small">${esc(b.motivo || '')}</td><td class="small">${esc(b.bloqueado_por)}<div class="muted">${fmtF(b.bloqueado_en)}</div></td>${isAprob() ? `<td><button class="btn sm" data-desbloq="${b.id}">Desbloquear</button></td>` : ''}</tr>`).join('')}
           </tbody></table></div>` : '<span class="small muted">Sin claves bloqueadas individualmente. Para bloquear una clave entra a Consultar clave.</span>'}`;
       bindBloqueos(box, () => { el.remove(); go('proveedores'); });
+      $('#pv-tpl', box).onclick = () => descargarPlantillaPrecios(p).catch(e => toast(errMsg(e), true));
+      $('#pv-lp', box).onclick = () => { el.remove(); cargarListaPrecios(p); };
     }});
 }
 
