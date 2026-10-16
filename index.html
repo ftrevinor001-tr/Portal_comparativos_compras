@@ -880,6 +880,9 @@ async function start(){
   shell();
   try { S.proveedores = await API.proveedores(); S.usuarios = await API.usuarios(); } catch(e) {}
   const v = store.get('cmp_view');
+  // Liga directa desde el Portal de Compras V2: ?cmp=<id del comparativo>
+  const ligado = +(new URLSearchParams(location.search).get('cmp') || 0);
+  if (ligado) { history.replaceState(null, '', location.pathname); go('editor', ligado); return; }
   go(VIEWS.some(x => x[0] === v) && (v !== 'admin' || isAprob()) ? v : 'inicio');
 }
 async function refrescarProveedores(){ S.proveedores = await API.proveedores(); }
@@ -1109,6 +1112,17 @@ async function vEditor(main, arg){
   if (claves.length) await cargarRefs(claves);
   if (arg && arg.nuevaClave) await agregarClaves([arg.nuevaClave], false);
   if (arg && arg.importado) { sugerirProveedores(claves); llenarConListas(); }
+  // Comparativo creado desde una propuesta de compra autorizada (Portal de Compras V2): la primera vez que se abre
+  // completa cada línea con el catálogo y el proveedor vigente, agrega los proveedores sugeridos y los precios de lista.
+  const desdeProp = c.lineas.filter(l => l._completar);
+  if (desdeProp.length && editable()) {
+    desdeProp.forEach(l => { const p = E().prod.get(+l.clave) || {}, v = E().vig.get(+l.clave);
+      Object.assign(l, {descripcion: l.descripcion || p.descripcion || '', u_costo: p.u_costo ?? null, u_compra: p.u_compra ?? null, f_u_compra: p.f_u_compra || null, base: p.precio_base ?? null,
+        vigente: v ? {proveedor:v.proveedor, precio:v.precio, fecha:v.aprobado_en, folio:v.folio} : null, precios: l.precios || {}, elegido: null, manual: false, motivo: l.motivo || ''});
+      delete l._completar; });
+    sugerirProveedores(desdeProp.map(l => +l.clave)); llenarConListas(); S.dirty = true;
+    setTimeout(() => toast('Comparativo creado desde la propuesta de compra: ya se agregaron los proveedores sugeridos. Captura precios y guárdalo.'), 50);
+  }
   if (arg && (arg.importado || arg.duplicar || arg.nuevaClave)) S.dirty = true;
   c.lineas.forEach((l, i) => calcLinea(i));
   pintarEditor(main);
