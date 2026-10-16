@@ -149,6 +149,7 @@ th.num{font-family:var(--f-display);font-size:.8rem}
 .cmp-grid td.falta input{border-color:var(--warn)}
 .tag-rel{font-family:var(--f-body);font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
 .tag-rel.comp{color:var(--ok)}
+.tag-rel.sim{color:var(--info)}
 .tag-bq{font-family:var(--f-body);font-size:.7rem;font-weight:600;color:var(--bad);text-transform:uppercase;letter-spacing:.03em}
 .cmp-grid td.entrega{font-weight:600;font-size:.74rem;text-align:center;border-left:2px solid var(--line-2);color:var(--fg)}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
@@ -286,8 +287,11 @@ function makeSupabaseApi(){
     bloquear: async (provId, clave, motivo, uid, pin) => ok(await sb.rpc('cmp_bloquear', {p_prov:provId, p_clave:clave ?? null, p_motivo:motivo, p_usuario_id:uid, p_pin:pin})),
     desbloquear: async (id, uid, pin) => ok(await sb.rpc('cmp_desbloquear', {p_id:id, p_usuario_id:uid, p_pin:pin})),
     cargarRelaciones: async (adminId, adminPin, filas, reemplazar, claves, progreso) => {
-      let n = 0; const partes = chunk(filas, 1000);
-      for (let i=0;i<partes.length;i++){ n += ok(await sb.rpc('cmp_cargar_relaciones', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:partes[i], p_reemplazar: !!reemplazar && i === 0, p_claves: claves && claves.length ? claves : null})); progreso && progreso(i+1, partes.length); }
+      let n = 0; const partes = chunk(filas, 500);
+      // primero borra lo cargado antes para esas claves (llamada aparte para no exceder el tiempo de Supabase)
+      if (reemplazar) for (const k of chunk(claves && claves.length ? claves : [null], 5000))
+        ok(await sb.rpc('cmp_cargar_relaciones', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:[], p_reemplazar:true, p_claves: k[0] === null ? null : k}));
+      for (let i=0;i<partes.length;i++){ n += ok(await sb.rpc('cmp_cargar_relaciones', {p_admin_id:adminId, p_admin_pin:adminPin, p_filas:partes[i], p_reemplazar:false, p_claves:null})); progreso && progreso(i+1, partes.length); }
       return n;
     },
     cargarProductos: async (adminId, adminPin, filas, progreso) => {
@@ -300,7 +304,7 @@ function makeSupabaseApi(){
 
 /* ---------------- DEMOSTRACIÓN (localStorage) ---------------- */
 function makeDemoApi(){
-  const KEY = 'comparativos_demo_v4';
+  const KEY = 'comparativos_demo_v5';
   let db = null;
   try { db = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(e) {}
   if (!db) db = buildDemoSeed();
@@ -391,6 +395,7 @@ function makeDemoApi(){
         Object.entries(l.precios||{}).forEach(([k, v]) => { if (v.neto == null || !db.proveedores.some(p => p.id === +k)) return;
           let r = db.relaciones.find(x => x.clave === +l.clave && x.proveedor_id === +k);
           if (!r) { r = {clave:+l.clave, proveedor_id:+k, tipo:'COTIZADO', fuente:'COMPARATIVO'}; db.relaciones.push(r); }
+          if (r.tipo === 'SIMILAR') r.tipo = 'COTIZADO';
           Object.assign(r, {ultima_fecha:t.slice(0,10), ultimo_precio:v.neto, clave_proveedor:v.clave_prov || r.clave_proveedor || null, actualizado_en:t}); });
         if (!l.elegido) continue;
         const pr = (l.precios||{})[l.elegido]; const neto = pr && pr.neto;
@@ -469,10 +474,10 @@ function makeDemoApi(){
         let p = ids !== null ? db.proveedores.find(x => x.id_sistema === ids) : null;
         if (!p && nom) { p = db.proveedores.find(x => x.nombre === nom); if (p && ids !== null && p.id_sistema == null) p.id_sistema = ids; }
         if (!p) { p = {id:nextId('proveedores'), nombre:nom || 'PROVEEDOR ' + ids, id_sistema:ids, estatus:'EN EVALUACION', creado_por:a.nombre, creado_en:now(), actualizado_por:a.nombre, actualizado_en:now(), notas:'Alta automática al cargar proveedores por clave'}; db.proveedores.push(p); }
-        const tipo = /COTIZ/i.test(f.tipo || '') ? 'COTIZADO' : 'COMPRADO';
+        const tipo = /COTIZ/i.test(f.tipo || '') ? 'COTIZADO' : /SIMILAR/i.test(f.tipo || '') ? 'SIMILAR' : 'COMPRADO';
         let r = db.relaciones.find(x => x.clave === +f.clave && x.proveedor_id === p.id);
         if (!r) { r = {clave:+f.clave, proveedor_id:p.id, tipo, ultima_fecha:null, ultimo_precio:null}; db.relaciones.push(r); }
-        r.tipo = (r.tipo === 'COMPRADO' || tipo === 'COMPRADO') ? 'COMPRADO' : 'COTIZADO';
+        const R = {COMPRADO:0, COTIZADO:1, SIMILAR:2}; if (R[tipo] < R[r.tipo]) r.tipo = tipo;
         if (f.precio != null && (!r.ultima_fecha || (f.fecha || '') >= r.ultima_fecha)) r.ultimo_precio = f.precio;
         if (f.fecha && (!r.ultima_fecha || f.fecha > r.ultima_fecha)) r.ultima_fecha = f.fecha;
         if (f.clave_prov) r.clave_proveedor = f.clave_prov;
@@ -572,6 +577,7 @@ function buildDemoSeed(){
     db.relaciones.push({clave:r.clave, proveedor_id:8, tipo:'COMPRADO', ultima_fecha:'2026-08-20', ultimo_precio:r.ultimo, clave_proveedor:null, fuente:'CARGA'});
     db.relaciones.push({clave:r.clave, proveedor_id:7, tipo:'COTIZADO', ultima_fecha:'2026-06-10', ultimo_precio:r.collado, clave_proveedor:null, fuente:'CARGA'});
     db.relaciones.push({clave:r.clave, proveedor_id:12, tipo:'COTIZADO', ultima_fecha:'2026-03-15', ultimo_precio:null, clave_proveedor:null, fuente:'CARGA'});
+    db.relaciones.push({clave:r.clave, proveedor_id:9, tipo:'SIMILAR', ultima_fecha:null, ultimo_precio:null, clave_proveedor:null, fuente:'CARGA'});
   });
   pvc.forEach(l => { db.relaciones.push({clave:l.clave, proveedor_id:+l.elegido, tipo:'COMPRADO', ultima_fecha:'2026-09-02', ultimo_precio:l.u_compra, fuente:'CARGA'}); });
   db.bloqueos.push({id:1, proveedor_id:12, clave:null, motivo:'No cumple tiempos de entrega', bloqueado_por:'GERENTE DE COMPRAS', bloqueado_en:iso('2026-09-15'), activo:true});
@@ -598,6 +604,11 @@ const fmtF = (d) => { if (!d) return '—'; const x = new Date(String(d).length 
 const fmtFH = (d) => { if (!d) return '—'; const x = new Date(d); return isNaN(x) ? '—' : x.toLocaleString('es-MX', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const pillCls = (e) => ({'EN REVISION':'rev', 'EN EVALUACION':'EVAL'}[e] || e);
 const pill = (e) => `<span class="pill ${pillCls(e)}">${esc(e === 'EN REVISION' ? 'EN REVISIÓN' : e === 'EN EVALUACION' ? 'EN EVALUACIÓN' : e)}</span>`;
+/* Tipos de proveedor por clave: COMPRADO > COTIZADO > SIMILAR (compró claves similares) */
+const RANGO_TIPO = {COMPRADO:0, COTIZADO:1, SIMILAR:2};
+const rangoTipo = (t) => RANGO_TIPO[t] ?? 3;
+const etiquetaTipo = (t, larga) => t === 'COMPRADO' ? (larga ? 'Comprado' : 'comprado') : t === 'SIMILAR' ? (larga ? 'Clave similar' : 'similar') : (larga ? 'Solo cotizado' : 'cotizado');
+const claseTipo = (t) => t === 'COMPRADO' ? 'comp' : t === 'SIMILAR' ? 'sim' : '';
 const isAprob = () => S.user && ['APROBADOR','ADMIN'].includes(S.user.rol);
 const isAdmin = () => S.user && S.user.rol === 'ADMIN';
 const store = {
@@ -822,10 +833,10 @@ function tablaProvClave(clave, rels, bloqs){
   if (!ids.length) return `<div class="tbl-wrap"><div class="empty">Sin proveedores registrados para esta clave. Se registran al cargar el archivo de proveedores por clave o al aprobar un comparativo.</div></div>`;
   const filas = ids.map(id => { const r = rels.find(x => x.proveedor_id === id) || {}; const pv = provPorId(id) || {nombre:'#' + id};
     const b = bloqs.find(x => x.proveedor_id === id && x.clave != null && +x.clave === +clave), g = bloqs.find(x => x.proveedor_id === id && x.clave == null);
-    return {id, r, pv, b, g}; }).sort((a, b) => (a.r.tipo === 'COMPRADO' ? 0 : 1) - (b.r.tipo === 'COMPRADO' ? 0 : 1) || (b.r.importe || 0) - (a.r.importe || 0) || a.pv.nombre.localeCompare(b.pv.nombre));
+    return {id, r, pv, b, g}; }).sort((a, b) => rangoTipo(a.r.tipo) - rangoTipo(b.r.tipo) || (b.r.importe || 0) - (a.r.importe || 0) || a.pv.nombre.localeCompare(b.pv.nombre));
   return `<div class="tbl-wrap"><table><thead><tr><th>Proveedor</th><th>Historial</th><th>Primera compra</th><th>Última vez</th><th class="num">Recepciones</th><th class="num">Importe</th><th class="num">Último precio</th><th>Clave proveedor</th><th>Estado</th>${isAprob() ? '<th></th>' : ''}</tr></thead><tbody>
     ${filas.map(({id, r, pv, b, g}) => `<tr><td><b>${esc(pv.nombre)}</b> ${pv.estatus && pv.estatus !== 'APROBADO' ? pill(pv.estatus) : ''}${pv.id_sistema ? `<div class="small muted mono">ID ${pv.id_sistema}</div>` : ''}</td>
-      <td>${r.tipo ? `<span class="tag-rel ${r.tipo === 'COMPRADO' ? 'comp' : ''}">${r.tipo === 'COMPRADO' ? 'Comprado' : 'Solo cotizado'}</span>` : '<span class="muted small">—</span>'}</td>
+      <td>${r.tipo ? `<span class="tag-rel ${claseTipo(r.tipo)}" title="${r.tipo === 'SIMILAR' ? 'Se le han comprado claves similares (misma marca, grupo y subgrupo)' : ''}">${etiquetaTipo(r.tipo, true)}</span>` : '<span class="muted small">—</span>'}</td>
       <td class="small">${fmtF(r.primera_fecha)}</td><td class="small">${fmtF(r.ultima_fecha)}</td><td class="num">${r.recepciones != null ? fmtN(r.recepciones) : '—'}</td><td class="num">${r.importe != null ? fmtImp(r.importe) : '—'}</td><td class="num">${fmt$(r.ultimo_precio)}</td><td class="mono small">${esc(r.clave_proveedor || '')}</td>
       <td class="small">${g ? `<span class="pill RECHAZADO">BLOQUEADO EN TODAS</span><div class="muted">${esc(g.motivo || '')}</div>` : b ? `<span class="pill RECHAZADO">BLOQUEADO</span><div class="muted">${esc(b.motivo || '')} · ${esc(b.bloqueado_por)}</div>` : pv.estatus === 'SUSPENDIDO' ? pill('SUSPENDIDO') : '<span class="pill APROBADO">SE COTIZA</span>'}</td>
       ${isAprob() ? `<td>${b ? `<button class="btn sm" data-desbloq="${b.id}">Desbloquear</button>` : g ? '' : `<button class="btn sm bad" data-bloqc="${id}" data-clave-b="${clave}">Bloquear</button>`}</td>` : ''}</tr>`).join('')}
@@ -1020,11 +1031,13 @@ function bloqueoDe(provId, clave){
 const bloqueoGlobal = (provId) => (E() && E().bloq || []).find(x => x.proveedor_id === +provId && x.clave == null) || ((provPorId(provId)||{}).estatus === 'SUSPENDIDO' ? {motivo:'Proveedor suspendido'} : null);
 const relDe = (provId, clave) => (E().rel.get(+clave) || []).find(r => r.proveedor_id === +provId);
 /* Proveedores con historial (comprado / cotizado) que faltan en el comparativo: se agregan solos */
+function conSimilares(){ try { return localStorage.getItem('cmp_similares') !== '0'; } catch(e) { return true; } }
 function sugerirProveedores(claves){
   const c = E().c; if (!editable()) return [];
   const usados = new Set(c.proveedores.map(p => +p.id)); const nuevos = [];
-  const rels = claves.flatMap(k => (E().rel.get(+k) || []).filter(r => !bloqueoDe(r.proveedor_id, k)));
-  rels.sort((a, b) => (a.tipo === 'COMPRADO' ? 0 : 1) - (b.tipo === 'COMPRADO' ? 0 : 1) || (b.importe || 0) - (a.importe || 0));
+  const conSim = conSimilares();
+  const rels = claves.flatMap(k => (E().rel.get(+k) || []).filter(r => !bloqueoDe(r.proveedor_id, k) && (conSim || r.tipo !== 'SIMILAR')));
+  rels.sort((a, b) => rangoTipo(a.tipo) - rangoTipo(b.tipo) || (b.importe || 0) - (a.importe || 0));
   rels.forEach(r => {
     if (usados.has(+r.proveedor_id)) return; const p = provPorId(r.proveedor_id); if (!p) return;
     usados.add(p.id); nuevos.push(p.nombre);
@@ -1120,6 +1133,7 @@ function pintarEditor(main){
       <div class="row"><h2>Claves</h2><span class="spacer"></span>
         ${ed ? `<form id="e-addf" class="row" style="gap:6px"><input id="e-add" type="text" placeholder="Agregar claves (ej. 15008 15009)" style="width:240px"><button class="btn">Agregar</button></form>
         <button class="btn" id="e-paste">Pegar desde Excel</button>` : ''}
+        <label class="row small" style="gap:6px" title="Agregar solos a los proveedores a los que se les han comprado claves similares (misma marca, grupo y subgrupo)"><input id="e-sim" type="checkbox" ${conSimilares() ? 'checked' : ''}> Proveedores de claves similares</label>
         <label class="row small" style="gap:6px"><input id="e-dem" type="checkbox"> Datos de demanda</label>
       </div>
       <div class="tbl-wrap grid-scroll" id="e-grid" tabindex="-1"></div>
@@ -1135,6 +1149,10 @@ function pintarEditor(main){
       await agregarClaves(cl); };
     $('#e-paste').onclick = pegarExcel;
   }
+  $('#e-sim').onchange = (e) => {
+    try { localStorage.setItem('cmp_similares', e.target.checked ? '1' : '0'); } catch(err) {}
+    if (e.target.checked && editable() && c.lineas.length) { const n = sugerirProveedores(c.lineas.map(l => l.clave)); if (n.length) { c.lineas.forEach((l, i) => calcLinea(i)); marcarCambio(); pintarProvs(); pintarGrid(); pintarSum(); } }
+  };
   $('#e-dem').onchange = (e) => { c.ver_demanda = e.target.checked; if (editable()) marcarCambio(); pintarGrid(); };
   pintarAcciones(); pintarProvs(); pintarGrid(); pintarSum();
   const g = $('#e-grid');
@@ -1282,8 +1300,8 @@ function pintarFila(i){
     const n = $(`[data-n="${p.id}"]`, tr);
     const rel = relDe(p.id, l.clave), bq = bloqueoDe(p.id, l.clave);
     const neto = (pr.sinflete != null && pr.precio != null && Math.abs(pr.sinflete - pr.precio) > 1e-9) ? 'neto ' + fmt$(pr.sinflete) : '';
-    n.innerHTML = bq ? '<span class="tag-bq">bloqueado</span>' : [rel ? `<span class="tag-rel ${rel.tipo === 'COMPRADO' ? 'comp' : ''}" title="${rel.ultima_fecha ? 'Último: ' + esc(fmtF(rel.ultima_fecha)) : ''}${rel.ultimo_precio != null ? ' ' + esc(fmt$(rel.ultimo_precio)) : ''}">${rel.tipo === 'COMPRADO' ? 'comprado' : 'cotizado'}</span>` : '', neto].filter(Boolean).join(' · ');
-    if (!bq && rel && pr.precio == null && editable()) $(`td[data-pc="${p.id}"]`, tr).classList.add('falta'); else $(`td[data-pc="${p.id}"]`, tr).classList.remove('falta');
+    n.innerHTML = bq ? '<span class="tag-bq">bloqueado</span>' : [rel ? `<span class="tag-rel ${claseTipo(rel.tipo)}" title="${rel.tipo === 'SIMILAR' ? 'Se le han comprado claves similares. ' : ''}${rel.ultima_fecha ? 'Último: ' + esc(fmtF(rel.ultima_fecha)) : ''}${rel.ultimo_precio != null ? ' ' + esc(fmt$(rel.ultimo_precio)) : ''}">${etiquetaTipo(rel.tipo)}</span>` : '', neto].filter(Boolean).join(' · ');
+    if (!bq && rel && rel.tipo !== 'SIMILAR' && pr.precio == null && editable()) $(`td[data-pc="${p.id}"]`, tr).classList.add('falta'); else $(`td[data-pc="${p.id}"]`, tr).classList.remove('falta');
     $(`[data-d="${p.id}"]`, tr).innerHTML = fmtPct((l._dif || {})[p.id] ?? null);
     const fl = $(`[data-fl="${p.id}"]`, tr); if (fl) { fl.innerHTML = pr.neto != null ? fmt$(pr.neto) : '—'; fl.classList.toggle('best', best); }
   });
@@ -1432,7 +1450,7 @@ async function enviar(){
   const evals = [...new Set(c.lineas.filter(l => l.elegido && (provPorId(l.elegido)||{}).estatus === 'EN EVALUACION').map(l => provPorId(l.elegido).nombre))];
   const sinAsig = c.lineas.filter(l => !l.elegido).length;
   // proveedores con historial (no bloqueados) a los que no se les pidió precio
-  const faltan = c.lineas.map(l => ({clave:l.clave, provs:(E().rel.get(+l.clave) || []).filter(r => !bloqueoDe(r.proveedor_id, l.clave) && ((l.precios||{})[r.proveedor_id]||{}).precio == null)
+  const faltan = c.lineas.map(l => ({clave:l.clave, provs:(E().rel.get(+l.clave) || []).filter(r => r.tipo !== 'SIMILAR' && !bloqueoDe(r.proveedor_id, l.clave) && ((l.precios||{})[r.proveedor_id]||{}).precio == null)
     .map(r => (provPorId(r.proveedor_id)||{}).nombre).filter(Boolean)})).filter(x => x.provs.length);
   const avisos = [evals.length ? `Se eligieron proveedores en evaluación: <b>${evals.map(esc).join(', ')}</b>.` : '', sinAsig ? `${sinAsig} clave(s) quedan sin asignar.` : '',
     faltan.length ? `<br><br><b>Faltan precios de proveedores con historial en ${faltan.length} clave(s):</b><br>${faltan.slice(0, 8).map(x => `${x.clave}: ${x.provs.map(esc).join(', ')}`).join('<br>')}${faltan.length > 8 ? '<br>…' : ''}<br><span class="small muted">Si alguno no debe cotizar esa clave, bloquéalo desde Consultar clave.</span>` : ''].filter(Boolean).join(' ');
@@ -1774,10 +1792,10 @@ function editarProveedor(p){
     <div class="err-msg"></div>`, actions:acts, onOpen: n ? null : async (el) => {
       const [bloqs, rels] = await Promise.all([API.bloqueos().catch(() => []), API.relacionesProveedor(p.id).catch(() => [])]);
       const mios = bloqs.filter(b => b.proveedor_id === p.id), g = mios.find(b => b.clave == null), porClave = mios.filter(b => b.clave != null);
-      const comp = rels.filter(r => r.tipo === 'COMPRADO').length;
+      const comp = rels.filter(r => r.tipo === 'COMPRADO').length, sim = rels.filter(r => r.tipo === 'SIMILAR').length;
       const box = $('#pv-bq', el); if (!box) return;
       box.innerHTML = `<hr style="border:0;border-top:1px solid var(--line);width:100%">
-        <div class="row"><h3>Claves y bloqueos</h3><span class="small muted">Historial en ${rels.length.toLocaleString('es-MX')} claves (${comp.toLocaleString('es-MX')} compradas, ${(rels.length - comp).toLocaleString('es-MX')} solo cotizadas)</span></div>
+        <div class="row"><h3>Claves y bloqueos</h3><span class="small muted">Historial en ${rels.length.toLocaleString('es-MX')} claves (${comp.toLocaleString('es-MX')} compradas, ${(rels.length - comp - sim).toLocaleString('es-MX')} solo cotizadas, ${sim.toLocaleString('es-MX')} similares)</span></div>
         <div class="row">${g ? `<span class="pill RECHAZADO">BLOQUEADO EN TODAS LAS CLAVES</span><span class="small muted">${esc(g.motivo || '')} · ${esc(g.bloqueado_por)} · ${fmtF(g.bloqueado_en)}</span>${isAprob() ? `<button class="btn sm" data-desbloq="${g.id}">Desbloquear</button>` : ''}`
           : `<span class="small">Se pide en comparativos.</span>${isAprob() ? `<button class="btn sm bad" data-bloqc="${p.id}">Bloquear en todas las claves</button>` : ''}`}</div>
         ${porClave.length ? `<div class="tbl-wrap"><table><thead><tr><th>Clave bloqueada</th><th>Motivo</th><th>Bloqueó</th>${isAprob() ? '<th></th>' : ''}</tr></thead><tbody>
@@ -1900,12 +1918,72 @@ function consolidarRel(filas){
   filas.forEach(f => {
     const k = f.clave + '|' + (f.id_prov != null ? 'id' + f.id_prov : f.proveedor), x = m.get(k);
     if (!x) { m.set(k, {...f}); return; }
-    if (f.tipo === 'COMPRADO') { x.tipo = 'COMPRADO'; ['recepciones','importe','primera_fecha'].forEach(c => { if (f[c] != null) x[c] = f[c]; }); }
+    if (rangoTipo(f.tipo) < rangoTipo(x.tipo)) x.tipo = f.tipo;
+    if (f.tipo === 'COMPRADO') ['recepciones','importe','primera_fecha'].forEach(c => { if (f[c] != null) x[c] = f[c]; });
     if (f.fecha && (!x.fecha || f.fecha >= x.fecha)) { x.fecha = f.fecha; if (f.precio != null) x.precio = f.precio; }
     if (f.clave_prov) x.clave_prov = f.clave_prov;
     if (!x.proveedor && f.proveedor) x.proveedor = f.proveedor;
   });
   return [...m.values()];
+}
+/* Formato CONSOLIDADO (hoja "Base Consolidada"): en PROVEEDOR 1..8 van primero los comprados
+   (tantos como "# PROV. COMPRADOS") y después los de claves similares; COTIZADO 1..n = solo cotizados */
+function esConsolidado(wb){ return wb.SheetNames.some(n => normH(n) === 'baseconsolidada'); }
+function leerConsolidado(wb, archivo){
+  const hoja = (nombre) => { const n = wb.SheetNames.find(x => normH(x) === nombre); return n ? XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:null, blankrows:false}) : null; };
+  const esClave = (v) => /^\d+$/.test(String(v ?? '').trim());
+  const cat = new Map();
+  (hoja('catalogoproveedores') || []).slice(1).forEach(r => { if (r && r[1] && esClave(r[0])) cat.set(String(r[1]).trim().toUpperCase(), +r[0]); });
+  const base = hoja('baseconsolidada');
+  const hr = base.findIndex(r => normH((r||[])[0]) === 'clave');
+  if (hr < 0) throw new Error(`${archivo}: no encontré el encabezado CLAVE en la hoja Base Consolidada`);
+  const H = base[hr].map(normH), col = (f) => H.findIndex(f);
+  const cComp = col(h => h === 'comprador'), cNComp = col(h => h === 'provcomprados');
+  const provs = H.map((h, j) => /^proveedor\d+$/.test(h) ? j : -1).filter(j => j >= 0);
+  const cots = H.map((h, j) => h.startsWith('cotizado') && /\d/.test(h) ? j : -1).filter(j => j >= 0);
+  const porComp = new Map();
+  const grupo = (n) => { if (!porComp.has(n)) porComp.set(n, {archivo, compradores:[n], claves:[], filas:[], obs:[], nComp:0, nCot:0, nSim:0}); return porComp.get(n); };
+  base.slice(hr + 1).forEach(r => { r = r || []; if (!esClave(r[0])) return;
+    const clave = String(r[0]).trim(), g = grupo(cComp >= 0 && r[cComp] ? String(r[cComp]).trim().toUpperCase() : '—');
+    g.claves.push(+clave);
+    const nComp = cNComp >= 0 ? (aNum(r[cNComp]) || 0) : provs.length;
+    let k = 0;
+    provs.forEach(j => { const nom = r[j] == null ? '' : String(r[j]).trim(); if (!nom || /SIN COMPRAS/i.test(nom)) return;
+      const id = normH(H[j - 1]).startsWith('idprov') && esClave(r[j - 1]) ? +r[j - 1] : (cat.get(nom.toUpperCase()) ?? null);
+      const tipo = k < nComp ? 'COMPRADO' : 'SIMILAR'; k++;
+      g.filas.push({clave, id_prov:id, proveedor:nom.toUpperCase(), tipo}); if (tipo === 'COMPRADO') g.nComp++; else g.nSim++; });
+    cots.forEach(j => { const nom = r[j] == null ? '' : String(r[j]).trim(); if (!nom) return;
+      const idc = normH(H[j + 1]).startsWith('idcot') && esClave(r[j + 1]) ? +r[j + 1] : (cat.get(nom.toUpperCase()) ?? null);
+      g.filas.push({clave, id_prov:idc, proveedor:nom.toUpperCase(), tipo:'COTIZADO'}); g.nCot++; });
+  });
+  // datos de compra (recepciones, importe, fechas, clave del proveedor)
+  const det = hoja('detalleclaveproveedor');
+  if (det && det.length > 1) {
+    const D = det[0].map(normH), dc = (f) => D.findIndex(f);
+    const iC = dc(h => h === 'clave'), iId = dc(h => h === 'idproveedor'), iP = dc(h => h === 'proveedor'), iR = dc(h => h.includes('recepciones')),
+          iI = dc(h => h.startsWith('importe')), iF1 = dc(h => h.startsWith('primeracompra')), iF2 = dc(h => h.startsWith('ultimacompra')), iCP = dc(h => h.startsWith('claveprod'));
+    const claveComp = new Map(); porComp.forEach(g => g.claves.forEach(k => claveComp.set(k, g)));
+    det.slice(1).forEach(r => { r = r || []; if (!esClave(r[iC])) return; const g = claveComp.get(+r[iC]); if (!g) return;
+      g.filas.push({clave:String(r[iC]).trim(), id_prov:esClave(r[iId]) ? +r[iId] : null, proveedor:r[iP] ? String(r[iP]).trim().toUpperCase() : '', tipo:'COMPRADO',
+        fecha:iF2 >= 0 ? aFecha(r[iF2]) : null, primera_fecha:iF1 >= 0 ? aFecha(r[iF1]) : null, recepciones:iR >= 0 ? aNum(r[iR]) : null,
+        importe:iI >= 0 ? aNum(r[iI]) : null, clave_prov:iCP >= 0 && r[iCP] != null ? String(r[iCP]).trim() : null}); });
+  }
+  // hoja "Lista Proveedor-Clave" (si existe): completa lo que no alcanzó a entrar en las columnas de la base
+  const lista = hoja('listaproveedorclave');
+  if (lista && lista.length > 1) {
+    const L = lista[0].map(normH), lc = (f) => L.findIndex(f);
+    const iC = lc(h => h === 'clave'), iT = lc(h => h === 'tipo'), iId = lc(h => h === 'idproveedor'), iP = lc(h => h === 'proveedor'), iCo = lc(h => h === 'comprador');
+    const claveComp = new Map(); porComp.forEach(g => g.claves.forEach(k => claveComp.set(k, g)));
+    lista.slice(1).forEach(r => { r = r || []; if (!esClave(r[iC]) || (r[iP] == null && !esClave(r[iId]))) return;
+      let g = claveComp.get(+r[iC]);
+      if (!g) { g = grupo(iCo >= 0 && r[iCo] ? String(r[iCo]).trim().toUpperCase() : '—'); g.claves.push(+r[iC]); claveComp.set(+r[iC], g); }
+      const t = String(r[iT] ?? '').toUpperCase();
+      g.filas.push({clave:String(r[iC]).trim(), id_prov:esClave(r[iId]) ? +r[iId] : null, proveedor:r[iP] ? String(r[iP]).trim().toUpperCase() : '',
+        tipo: /COTIZ/.test(t) ? 'COTIZADO' : /SIMILAR/.test(t) ? 'SIMILAR' : 'COMPRADO'}); });
+  }
+  porComp.forEach(g => { g.filas = consolidarRel(g.filas); g.claves = [...new Set(g.claves)];
+    g.nComp = g.filas.filter(f => f.tipo === 'COMPRADO').length; g.nSim = g.filas.filter(f => f.tipo === 'SIMILAR').length; g.nCot = g.filas.length - g.nComp - g.nSim; });
+  return [...porComp.values()].sort((a, b) => a.compradores[0].localeCompare(b.compradores[0]));
 }
 /* Formato "Proveedores por clave — COMPRADOR" (hojas Base Proveedores, Detalle Clave-Proveedor, Catálogo Proveedores) */
 function esFormatoComprador(wb){ return wb.SheetNames.some(n => normH(n) === 'baseproveedores'); }
@@ -1959,6 +2037,12 @@ function admRelaciones(ab){
     let libros;
     try { libros = await Promise.all(files.map(async f => ({nombre:f.name, wb:await leerExcel(f)}))); }
     catch(err) { $('#rx-map').innerHTML = `<div class="err-msg">${esc(errMsg(err))}</div>`; return; }
+    const cons = libros.filter(x => esConsolidado(x.wb));
+    if (cons.length) {
+      if (cons.length < libros.length) toast('Se ignoraron los archivos que no son el consolidado', true);
+      try { return formatoComprador(cons.flatMap(x => leerConsolidado(x.wb, x.nombre)), true); }
+      catch(err) { $('#rx-map').innerHTML = `<div class="err-msg">${esc(errMsg(err))}</div>`; return; }
+    }
     const comp = libros.filter(x => esFormatoComprador(x.wb));
     if (comp.length) {
       if (comp.length < libros.length) toast(`Se ignoraron ${libros.length - comp.length} archivo(s) que no tienen el formato por comprador`, true);
@@ -1973,26 +2057,26 @@ function admRelaciones(ab){
     btn.disabled = true; st.textContent = 'Cargando…';
     try {
       const n = await API.cargarRelaciones(S.user.id, $('#rx-pin').value, filas, reemplazar, claves, (i, t) => { st.textContent = `Cargando… ${Math.round(i / t * 100)}%`; });
-      const comp = filas.filter(f => f.tipo === 'COMPRADO').length;
-      API.log(S.user.nombre, 'CARGÓ PROVEEDORES POR CLAVE', 'relaciones', '', {combinaciones:n, compradas:comp, solo_cotizadas:filas.length - comp});
-      st.textContent = `Listo: ${n.toLocaleString('es-MX')} combinaciones clave–proveedor (${comp.toLocaleString('es-MX')} compradas, ${(filas.length - comp).toLocaleString('es-MX')} solo cotizadas).`;
+      const comp = filas.filter(f => f.tipo === 'COMPRADO').length, sim = filas.filter(f => f.tipo === 'SIMILAR').length, cot = filas.length - comp - sim;
+      API.log(S.user.nombre, 'CARGÓ PROVEEDORES POR CLAVE', 'relaciones', '', {combinaciones:n, compradas:comp, solo_cotizadas:cot, similares:sim});
+      st.textContent = `Listo: ${n.toLocaleString('es-MX')} combinaciones clave–proveedor (${comp.toLocaleString('es-MX')} compradas, ${cot.toLocaleString('es-MX')} solo cotizadas${sim ? `, ${sim.toLocaleString('es-MX')} de claves similares` : ''}).`;
       toast('Proveedores por clave cargados'); await refrescarProveedores(); return true;
     } catch(err) { st.textContent = ''; toast(errMsg(err), true); return false; }
     finally { btn.disabled = false; }
   }
 
-  function formatoComprador(res){
+  function formatoComprador(res, consolidado){
     const filas = consolidarRel(res.flatMap(r => r.filas)), claves = [...new Set(res.flatMap(r => r.claves))], obs = res.flatMap(r => r.obs);
-    const nComp = filas.filter(f => f.tipo === 'COMPRADO').length;
+    const nComp = filas.filter(f => f.tipo === 'COMPRADO').length, nSim = filas.filter(f => f.tipo === 'SIMILAR').length, nCot = filas.length - nComp - nSim;
     const provIds = new Set(filas.map(f => f.id_prov ?? f.proveedor));
     const nuevos = [...provIds].filter(p => !S.proveedores.some(x => (typeof p === 'number' ? x.id_sistema === p : x.nombre === p))).length;
     $('#rx-map').innerHTML = `
-      <div class="tbl-wrap"><table><thead><tr><th>Archivo</th><th>Comprador</th><th class="num">Claves</th><th class="num">Compras</th><th class="num">Cotizados capturados</th><th class="num">Observaciones</th></tr></thead><tbody>
-        ${res.map(r => `<tr><td class="small">${esc(r.archivo)}</td><td>${esc(r.compradores.join(', '))}</td><td class="num">${r.claves.length.toLocaleString('es-MX')}</td><td class="num">${r.nComp.toLocaleString('es-MX')}</td><td class="num">${r.nCot.toLocaleString('es-MX')}</td><td class="num">${r.obs.length}</td></tr>`).join('')}
+      <div class="tbl-wrap"><table><thead><tr><th>Archivo</th><th>Comprador</th><th class="num">Claves</th><th class="num">Comprados</th><th class="num">Solo cotizados</th>${consolidado ? '<th class="num">Claves similares</th>' : '<th class="num">Observaciones</th>'}</tr></thead><tbody>
+        ${res.map(r => `<tr><td class="small">${esc(r.archivo)}</td><td>${esc(r.compradores.join(', '))}</td><td class="num">${r.claves.length.toLocaleString('es-MX')}</td><td class="num">${r.nComp.toLocaleString('es-MX')}</td><td class="num">${r.nCot.toLocaleString('es-MX')}</td><td class="num">${consolidado ? (r.nSim || 0).toLocaleString('es-MX') : r.obs.length}</td></tr>`).join('')}
       </tbody></table></div>
-      <p class="small" style="margin:0">Total: <b>${claves.length.toLocaleString('es-MX')}</b> claves · <b>${filas.length.toLocaleString('es-MX')}</b> combinaciones clave–proveedor (${nComp.toLocaleString('es-MX')} compradas, ${(filas.length - nComp).toLocaleString('es-MX')} solo cotizadas) · <b>${provIds.size}</b> proveedores${nuevos ? `, de los cuales <b>${nuevos}</b> se darán de alta en evaluación` : ''}.</p>
+      <p class="small" style="margin:0">Total: <b>${claves.length.toLocaleString('es-MX')}</b> claves · <b>${filas.length.toLocaleString('es-MX')}</b> combinaciones clave–proveedor (${nComp.toLocaleString('es-MX')} compradas, ${nCot.toLocaleString('es-MX')} solo cotizadas${nSim ? `, ${nSim.toLocaleString('es-MX')} de claves similares` : ''}) · <b>${provIds.size}</b> proveedores${nuevos ? `, de los cuales <b>${nuevos}</b> se darán de alta en evaluación` : ''}.</p>
       <label class="row small" style="gap:8px"><input id="rx-r" type="checkbox" checked> Reemplazar lo que se cargó antes para estas claves (lo que viene de comparativos aprobados se conserva)</label>
-      <div class="row"><div class="field" style="width:180px"><label for="rx-pin">Tu PIN</label><input id="rx-pin" type="password" inputmode="numeric"></div><button class="btn pri" id="rx-go" style="align-self:flex-end">Cargar ${res.length > 1 ? res.length + ' archivos' : 'archivo'}</button><span id="rx-st" class="small muted" style="align-self:flex-end"></span></div>
+      <div class="row"><div class="field" style="width:180px"><label for="rx-pin">Tu PIN</label><input id="rx-pin" type="password" inputmode="numeric"></div><button class="btn pri" id="rx-go" style="align-self:flex-end">${consolidado ? 'Cargar consolidado' : `Cargar ${res.length > 1 ? res.length + ' archivos' : 'archivo'}`}</button><span id="rx-st" class="small muted" style="align-self:flex-end"></span></div>
       <div id="rx-obs"></div>`;
     $('#rx-go').onclick = async () => {
       if (!filas.length) return toast('Los archivos no traen proveedores', true);
