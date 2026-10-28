@@ -1111,8 +1111,17 @@ async function vEditor(main, arg){
   if (arg && arg.nuevaClave) await agregarClaves([arg.nuevaClave], false);
   if (arg && arg.importado) { sugerirProveedores(claves); llenarConListas(); }
   if (arg && (arg.importado || arg.duplicar || arg.nuevaClave)) S.dirty = true;
+  // Borradores guardados (ej. creados desde una propuesta del Portal de Compras V2): agrega los
+  // proveedores con historial y los precios de listas que les falten, igual que al capturar claves
+  let avisoAuto = '';
+  if (typeof arg === 'number' && editable() && claves.length) {
+    const nuevos = sugerirProveedores(claves), llenos = llenarConListas();
+    if (nuevos.length || llenos) { S.dirty = true;
+      avisoAuto = `${llenos ? `${llenos} precio(s) tomados de las listas de precios. ` : ''}Presiona Guardar para que los cambios queden en el comparativo.`; }
+  }
   c.lineas.forEach((l, i) => calcLinea(i));
   pintarEditor(main);
+  if (avisoAuto) setTimeout(() => toast(avisoAuto), 100);
 }
 async function cargarRefs(claves){
   const [ps, vs, rs, pv] = await Promise.all([API.productos(claves), API.vigentes(claves), API.relaciones(claves).catch(() => []), API.preciosVigentes(claves).catch(() => [])]);
